@@ -49,18 +49,13 @@ export function segmentSystemPrompt() {
     "No inventes dialogos que no esten en el texto. Puedes corregir saltos de linea rotos.",
     "Si no hay encabezados ACTO/ESCENA, divide por cambio de lugar, de tiempo o de accion, no por cada parlamento.",
     "Puede haber mas de dos personajes.",
-    "Esquema: {\"title\":string|null,\"characters\":[{\"name\":string,\"role\":string|null}],\"scenes\":[{\"title\":string,\"location\":string|null,\"lines\":[{\"character\":string|null,\"text\":string}]}]}",
+    'Esquema: {"title":string|null,"characters":[{"name":string,"role":string|null}],"scenes":[{"title":string,"location":string|null,"lines":[{"character":string|null,"text":string}]}]}',
   ].join(" ");
 }
 
 export function segmentUserPrompt(input: { rawText: string; title?: string }) {
   const title = input.title?.trim() ? `Titulo sugerido del archivo: ${input.title.trim()}.` : "";
-  return [
-    "Segmenta este libreto teatral en personajes y escenas.",
-    title,
-    "Texto:",
-    input.rawText,
-  ]
+  return ["Segmenta este libreto teatral en personajes y escenas.", title, "Texto:", input.rawText]
     .filter(Boolean)
     .join("\n");
 }

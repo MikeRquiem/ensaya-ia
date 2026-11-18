@@ -15,6 +15,7 @@ import {
   Info,
   Sparkles,
   Drama,
+  FileText,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
@@ -405,6 +406,19 @@ function ConfigEnsayo() {
                 onChange={setSelectedSceneId}
               />
             </div>
+
+            {setup?.scene?.description &&
+              !setup.scene.description.startsWith("Escena creada al importar") && (
+                <div className="mt-4 p-3.5 rounded-xl bg-primary/5 border border-primary/20 text-xs text-foreground/90 space-y-1.5 animate-in fade-in">
+                  <div className="flex items-center gap-1.5 font-semibold text-primary text-[11px] uppercase tracking-wider">
+                    <FileText className="w-3.5 h-3.5" />
+                    Anotaciones de la escena / Intención dramática
+                  </div>
+                  <p className="leading-relaxed whitespace-pre-line text-muted-foreground text-xs max-h-48 overflow-y-auto pr-1">
+                    {setup.scene.description}
+                  </p>
+                </div>
+              )}
           </Section>
 
           <Section

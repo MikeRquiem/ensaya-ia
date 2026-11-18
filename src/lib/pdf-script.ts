@@ -1,31 +1,27 @@
-/** Extrae texto de un PDF con pdf.js (RF2: importar libretos .pdf). */
+/**
+ * Extracción geométrica de PDFs para libretos teatrales y cinematográficos.
+ *
+ * Usa coordenadas (X, Y) vía pdfjs-dist (en extractGeometricLines) para
+ * reconstruir renglones y detectar páginas a dos columnas, en lugar de aplanar
+ * todo el contenido de cada página en un solo renglón.
+ */
 
-export async function extractPdfText(file: File) {
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/build/pdf.worker.min.mjs",
-    import.meta.url,
-  ).toString();
+import { extractGeometricLines } from "@/lib/ai/script-parser";
+
+export async function extractPdfText(file: File): Promise<string> {
   const data = new Uint8Array(await file.arrayBuffer());
-  const document = await pdfjs.getDocument({ data }).promise;
-  const pages: string[] = [];
-  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-    const page = await document.getPage(pageNumber);
-    const content = await page.getTextContent();
-    const line = content.items
-      .map((item) => ("str" in item ? item.str : ""))
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (line) pages.push(line);
+  const lines = await extractGeometricLines(data);
+
+  if (lines.length === 0) {
+    throw new Error(
+      "El PDF no contiene texto digital extraíble. Asegúrate de que no sea un escaneo o imagen.",
+    );
   }
-  const rawText = pages.join("\n\n").trim();
-  if (!rawText)
-    throw new Error("El PDF no tiene texto extraible. Prueba un .txt o un PDF no escaneado.");
-  return rawText;
+
+  return lines.map((l) => l.text).join("\n");
 }
 
-export async function readScriptFile(file: File) {
+export async function readScriptFile(file: File): Promise<string> {
   if (file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf") {
     return extractPdfText(file);
   }

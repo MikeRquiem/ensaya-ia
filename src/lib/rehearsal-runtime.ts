@@ -14,6 +14,7 @@ import {
   type CharacterRecord,
   type RehearsalSummary,
   type SceneRecord,
+  type ScriptLineWithCharacter,
   type ScriptRecord,
   type ScriptSetup,
 } from "@/lib/rehearsal-data";
@@ -266,13 +267,52 @@ export async function loadScriptsSafe(): Promise<ScriptRecord[]> {
   return [getDemoScriptSetup().script!];
 }
 
+/**
+ * Junta turnos consecutivos del mismo personaje en la misma escena cuando no hay
+ * acotación intermedia, para ensayar parlamentos largos de corrido.
+ */
+export function consolidateScriptLines(
+  lines: ScriptLineWithCharacter[],
+): ScriptLineWithCharacter[] {
+  if (!lines || lines.length <= 1) return lines || [];
+
+  const consolidated: ScriptLineWithCharacter[] = [];
+  for (const line of lines) {
+    const last = consolidated[consolidated.length - 1];
+    const sameSpeaker =
+      last &&
+      last.character_id === line.character_id &&
+      last.scene_id === line.scene_id &&
+      !line.cue;
+
+    if (sameSpeaker) {
+      const sep = last.text.endsWith("-") ? "" : " ";
+      last.text = `${last.text.trim()}${sep}${line.text.trim()}`;
+      last.duration_seconds = (last.duration_seconds || 3) + (line.duration_seconds || 3);
+    } else {
+      consolidated.push({ ...line });
+    }
+  }
+
+  consolidated.forEach((line, idx) => {
+    line.line_order = idx + 1;
+  });
+
+  return consolidated;
+}
+
 export async function loadScriptSetupSafe(
   scriptId?: string,
   sceneId?: string,
 ): Promise<ScriptSetup> {
   try {
     const setup = await withTimeout(getScriptSetup(scriptId, sceneId));
-    if (setup.script && setup.lines.length > 0) return setup;
+    if (setup.script && setup.lines.length > 0) {
+      return {
+        ...setup,
+        lines: consolidateScriptLines(setup.lines),
+      };
+    }
   } catch {
     // Escena del balcon empaquetada para la demo.
   }

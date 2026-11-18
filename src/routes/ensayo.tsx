@@ -37,6 +37,7 @@ import {
   stopSpeaking,
 } from "@/lib/rehearsal-ai";
 import {
+  consolidateScriptLines,
   loadActiveRehearsal,
   loadRecentRehearsalsSafe,
   loadScriptSetupSafe,
@@ -125,7 +126,7 @@ function Ensayo() {
   const preferredVoice = profileData?.profile?.preferred_voice ?? null;
 
   const loading = (rehearsalLoading && !activeConfig) || setupLoading;
-  const lines = useMemo(() => setup?.lines ?? [], [setup?.lines]);
+  const lines = useMemo(() => consolidateScriptLines(setup?.lines ?? []), [setup?.lines]);
   const currentLine = lines[activeLineIndex] ?? null;
   const nextLine = lines[activeLineIndex + 1] ?? null;
   const afterLine = lines[activeLineIndex + 2] ?? null;
@@ -620,7 +621,7 @@ function Ensayo() {
             accumulatedFinalRef.current = "";
             listenRef.current?.reset();
             applySpokenText(attempt);
-          }, 750);
+          }, 1200);
         },
         onError: (message) => {
           setConnectionStatus(message);
@@ -977,6 +978,15 @@ function Ensayo() {
         </div>
 
         <aside className="space-y-4">
+          {setup?.scene?.description &&
+            !setup.scene.description.startsWith("Escena creada al importar") && (
+              <Card title="Anotación de la escena / Dirección">
+                <p className="text-xs text-muted-foreground whitespace-pre-line leading-relaxed max-h-48 overflow-y-auto pr-1">
+                  {setup.scene.description}
+                </p>
+              </Card>
+            )}
+
           <Card title="Personajes en escena">
             <div className="space-y-3">
               {(setup?.characters ?? []).slice(0, 4).map((character) => (

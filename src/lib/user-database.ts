@@ -61,10 +61,7 @@ function openVersionedDb(version: number): Promise<IDBDatabase> {
     request.onupgradeneeded = () => ensureAccountStores(request.result);
     request.onsuccess = () => {
       const db = request.result;
-      if (
-        db.objectStoreNames.contains("users") &&
-        db.objectStoreNames.contains("perfil_usuario")
-      ) {
+      if (db.objectStoreNames.contains("users") && db.objectStoreNames.contains("perfil_usuario")) {
         resolve(db);
         return;
       }

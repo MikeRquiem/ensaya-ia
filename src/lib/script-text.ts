@@ -14,6 +14,7 @@ export function isSceneHeaderLine(line: string) {
 /** Misma limpieza en importadores (local y remoto). */
 export function cleanCharacterName(value: string) {
   return value
+    .replace(/\((?:V\.?O\.?|O\.?S\.?|OFF|CONT'?D|CONTINÚA|VOZ|EN OFF)\)/gi, "")
     .replace(/[:.\-–—]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
