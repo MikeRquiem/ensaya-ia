@@ -37,3 +37,8 @@ bun.lockb
 *.njsproj
 *.sln
 *.sw?
+
+# Python / TinyLLM
+src/teleprompter/venv/
+**/__pycache__/
+*.pyc
