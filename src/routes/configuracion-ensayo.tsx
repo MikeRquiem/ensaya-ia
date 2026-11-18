@@ -15,6 +15,7 @@ import {
   Info,
   Sparkles,
   Drama,
+  X,
   FileText,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
@@ -24,6 +25,11 @@ import { loadScriptSetupSafe, loadScriptsSafe, startLocalRehearsal } from "@/lib
 import { getGrupoParaScript, isLibretoEnGrupo, isMiembroDelGrupo } from "@/lib/grupos-api";
 import { getLocalScriptSetup } from "@/lib/local-library";
 import { getDemoScriptSetup } from "@/lib/demo-script";
+import {
+  assignCharactersToHumans,
+  computeConflictMatrixInMemory,
+  type CastAssignmentResult,
+} from "@/lib/ai/actor-assignment";
 
 export const Route = createFileRoute("/configuracion-ensayo")({
   component: ConfigEnsayo,
@@ -102,6 +108,32 @@ function ConfigEnsayo() {
   const [useProfileVoiceForAll, setUseProfileVoiceForAll] = useState(false);
   const [addingCharacter, setAddingCharacter] = useState(false);
   const [newCharacterName, setNewCharacterName] = useState("");
+  const [castModalOpen, setCastModalOpen] = useState(false);
+  const [numPhysicalHumans, setNumPhysicalHumans] = useState(2);
+  const [castResult, setCastResult] = useState<CastAssignmentResult | null>(null);
+
+  function handleCalculateCast(actorsCount: number) {
+    if (!setup?.scenes?.length || !setup?.lines?.length) {
+      toast.error("No hay escenas ni líneas cargadas para calcular el reparto.");
+      return;
+    }
+    const { characterStats, directDialogueMatrix } = computeConflictMatrixInMemory(
+      setup.scenes.map((sc) => ({
+        id: sc.id,
+        lines: setup.lines
+          .filter((l) => l.scene_id === sc.id)
+          .map((l) => ({
+            characterName: l.character?.name,
+            text: l.text,
+          })),
+      })),
+    );
+
+    const res = assignCharactersToHumans(characterStats, directDialogueMatrix, actorsCount);
+    setCastResult(res);
+    setNumPhysicalHumans(actorsCount);
+    setCastModalOpen(true);
+  }
 
   const { data: profileData } = useQuery({
     queryKey: ["perfil-usuario"],
@@ -407,41 +439,166 @@ function ConfigEnsayo() {
               />
             </div>
 
-            {setup?.scene?.description &&
-              !setup.scene.description.startsWith("Escena creada al importar") && (
-                <div className="mt-4 p-3.5 rounded-xl bg-primary/5 border border-primary/20 text-xs text-foreground/90 space-y-1.5 animate-in fade-in">
-                  <div className="flex items-center gap-1.5 font-semibold text-primary text-[11px] uppercase tracking-wider">
-                    <FileText className="w-3.5 h-3.5" />
-                    Anotaciones de la escena / Intención dramática
-                  </div>
-                  <p className="leading-relaxed whitespace-pre-line text-muted-foreground text-xs max-h-48 overflow-y-auto pr-1">
-                    {setup.scene.description}
-                  </p>
+            {setup?.scene?.description && !setup.scene.description.startsWith("Escena creada al importar") && (
+              <div className="mt-4 p-3.5 rounded-xl bg-primary/5 border border-primary/20 text-xs text-foreground/90 space-y-1.5 animate-in fade-in">
+                <div className="flex items-center gap-1.5 font-semibold text-primary text-[11px] uppercase tracking-wider">
+                  <FileText className="w-3.5 h-3.5" />
+                  Anotaciones de la escena / Intención dramática
                 </div>
-              )}
+                <p className="leading-relaxed whitespace-pre-line text-muted-foreground text-xs max-h-48 overflow-y-auto pr-1">
+                  {setup.scene.description}
+                </p>
+              </div>
+            )}
           </Section>
 
           <Section
             title="2. Personajes"
             subtitle="Selecciona quién interpretas y revisa las voces sintéticas."
             action={
-              <button
-                type="button"
-                onClick={() => {
-                  if (!canAddCharacter) {
-                    toast.error(
-                      "Duplica el libreto en Libretos para agregar personajes a una copia tuya.",
-                    );
-                    return;
-                  }
-                  setAddingCharacter((open) => !open);
-                }}
-                className="inline-flex items-center gap-1.5 text-xs bg-primary/10 text-primary border border-primary/30 rounded-lg px-3 py-1.5"
-              >
-                <Plus className="w-3.5 h-3.5" /> Agregar personaje
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleCalculateCast(numPhysicalHumans)}
+                  className="inline-flex items-center gap-1.5 text-xs bg-primary/10 text-primary border border-primary/30 rounded-lg px-2.5 py-1.5 hover:bg-primary/20 transition"
+                  title="Asignar múltiples personajes a actores físicos sin choques escénicos"
+                >
+                  <Sparkles className="w-3.5 h-3.5" /> Reparto inteligente
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!canAddCharacter) {
+                      toast.error(
+                        "Duplica el libreto en Libretos para agregar personajes a una copia tuya.",
+                      );
+                      return;
+                    }
+                    setAddingCharacter((open) => !open);
+                  }}
+                  className="inline-flex items-center gap-1.5 text-xs bg-surface border border-border/80 rounded-lg px-2.5 py-1.5 hover:border-primary/40 transition"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Agregar personaje
+                </button>
+              </div>
             }
           >
+            {/* Modal de Reparto Inteligente (N Personajes -> P Actores) */}
+            {castModalOpen && castResult && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 animate-in fade-in">
+                <div className="w-full max-w-xl bg-surface border border-border rounded-2xl shadow-2xl p-6 relative">
+                  <div className="flex items-start justify-between mb-4">
+                    <div>
+                      <h3 className="font-semibold text-lg text-foreground flex items-center gap-2">
+                        <Sparkles className="w-5 h-5 text-primary" /> Reparto Inteligente de Personajes
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Asigna matemáticamente {castResult.summary.totalCharacters} personajes a {numPhysicalHumans} personas físicas sin que nadie hable consigo mismo.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setCastModalOpen(false)}
+                      className="p-1 rounded-lg text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Selector de número de actores */}
+                  <div className="flex items-center gap-2 mb-4 bg-surface-raised p-2 rounded-xl border border-border/60">
+                    <span className="text-xs font-medium text-muted-foreground pl-2">Personas físicas disponibles:</span>
+                    <div className="flex items-center gap-1.5 ml-auto">
+                      {[1, 2, 3, 4, 5].map((count) => (
+                        <button
+                          key={count}
+                          type="button"
+                          onClick={() => handleCalculateCast(count)}
+                          className={`px-3 py-1 rounded-lg text-xs font-medium transition ${
+                            numPhysicalHumans === count
+                              ? "bg-primary text-primary-foreground shadow-sm"
+                              : "bg-surface border border-border/80 text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          {count} {count === 1 ? "persona" : "personas"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Lista de actores y sus asignaciones */}
+                  <div className="space-y-2.5 max-h-[300px] overflow-y-auto pr-1">
+                    {castResult.humanAssignments.map((human) => (
+                      <div
+                        key={human.actorIndex}
+                        className="p-3.5 rounded-xl border border-border/70 bg-surface/80 flex flex-col gap-2"
+                      >
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-foreground flex items-center gap-1.5">
+                            <User className="w-3.5 h-3.5 text-primary" /> {human.actorName}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {human.totalWords} palabras asignadas
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {human.assignedCharacters.map((charName) => (
+                            <span
+                              key={charName}
+                              className={`px-2 py-0.5 rounded text-[11px] font-medium border ${
+                                human.actorIndex === 1
+                                  ? "bg-primary/15 text-primary border-primary/30"
+                                  : "bg-surface-raised text-foreground border-border/60"
+                              }`}
+                            >
+                              {charName}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+
+                    {castResult.aiTtsFallbackCharacters.length > 0 && (
+                      <div className="p-3 rounded-xl border border-accent/40 bg-accent/10 text-xs">
+                        <span className="font-semibold text-accent-foreground block mb-1">
+                          Lectura automática de respaldo (AI TTS) por colisión escénica:
+                        </span>
+                        <p className="text-[11px] text-muted-foreground">
+                          {castResult.aiTtsFallbackCharacters
+                            .map((f) => f.character)
+                            .filter((v, i, a) => a.indexOf(v) === i)
+                            .join(", ")}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex justify-end gap-2.5 mt-5 pt-3 border-t border-border/60">
+                    <button
+                      type="button"
+                      onClick={() => setCastModalOpen(false)}
+                      className="px-4 py-2 text-xs font-medium border border-border rounded-lg text-muted-foreground hover:text-foreground"
+                    >
+                      Cerrar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const myChars = castResult.humanAssignments[0]?.assignedCharacters ?? [];
+                        if (myChars.length > 0) {
+                          const targetChar = setup?.characters.find((c) => c.name === myChars[0]);
+                          if (targetChar) setSelectedCharacterId(targetChar.id);
+                        }
+                        setCastModalOpen(false);
+                        toast.success(`Reparto aplicado: Interpretas a ${castResult.humanAssignments[0]?.assignedCharacters.join(", ")}`);
+                      }}
+                      className="px-4 py-2 text-xs font-medium bg-primary-gradient text-primary-foreground rounded-lg shadow-sm"
+                    >
+                      Aplicar reparto
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             {addingCharacter && canAddCharacter && (
               <form
                 className="flex flex-wrap gap-2 mb-3"
@@ -467,16 +624,21 @@ function ConfigEnsayo() {
             )}
             <div className="space-y-3">
               {(setup?.characters || []).filter(Boolean).map((character) => {
-                const active = selectedCharacterId === character.id;
-                const tag = character.actor_type === "user" ? "Tú" : "Voz";
+                const isSelected = selectedCharacterId
+                  ? selectedCharacterId === character.id
+                  : character.actor_type === "user";
+                const tag = isSelected ? "Tú" : "Voz";
+                const linesInScene = (setup?.lines || []).filter(
+                  (line) => line.character_id === character.id,
+                ).length;
 
                 return (
                   <button
                     key={character.id}
                     onClick={() => setSelectedCharacterId(character.id)}
                     className={`w-full grid grid-cols-[auto_1fr_1fr_1fr_auto] gap-3 items-center border rounded-lg p-3 text-left transition ${
-                      active
-                        ? "bg-primary/10 border-primary/50"
+                      isSelected
+                        ? "bg-primary/10 border-primary/50 shadow-sm"
                         : "bg-surface/60 border-border/40 hover:border-primary/30"
                     }`}
                   >
@@ -485,22 +647,28 @@ function ConfigEnsayo() {
                         {character.name?.[0] || "?"}
                       </div>
                       <div>
-                        <div className="text-sm flex items-center gap-1.5">
+                        <div className="text-sm flex items-center gap-1.5 font-medium">
                           {character.name}
                           <span
-                            className={`text-[10px] px-1.5 py-0.5 rounded ${tag === "Tú" ? "bg-primary text-primary-foreground" : "bg-accent text-accent-foreground"}`}
+                            className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
+                              tag === "Tú"
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-accent text-accent-foreground"
+                            }`}
                           >
                             {tag}
                           </span>
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {character.role ?? "Sin rol"}
+                          {linesInScene > 0
+                            ? `${linesInScene} ${linesInScene === 1 ? "línea" : "líneas"} en esta escena`
+                            : character.role ?? "Sin parlamento en esta escena"}
                         </div>
                       </div>
                     </div>
                     <MiniValue
-                      label="Voz"
-                      value={character.voice ?? "Sin voz"}
+                      label="Modo de lectura"
+                      value={tag === "Tú" ? "Tu voz (micrófono)" : (character.voice ?? "Voz IA")}
                       icon={tag === "Voz" ? <Volume2 className="w-3.5 h-3.5" /> : null}
                     />
                     <MiniValue label="Emoción base" value={character.base_emotion ?? "Neutral"} />

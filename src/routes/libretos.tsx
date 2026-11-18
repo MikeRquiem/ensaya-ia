@@ -255,7 +255,7 @@ function Libretos() {
   };
 
   const importMutation = useMutation({
-    mutationFn: importScriptFromText,
+    mutationFn: (draft: ScriptImportDraft) => importScriptFromText(draft),
     onSuccess: (script) => {
       refreshScripts();
       setSelectedId(script.id);
@@ -465,8 +465,10 @@ function Libretos() {
     try {
       const segmented = await withTimeout(
         requestScriptSegment({
-          rawText: draft.rawText,
-          title: draft.title,
+          data: {
+            rawText: draft.rawText,
+            title: draft.title,
+          },
         }),
         IMPORT_TIMEOUT_MS,
         "GEMINI_TIMEOUT",
@@ -768,7 +770,7 @@ function Libretos() {
                 onClick={() => {
                   setReviewOpen(false);
                   setReviewResult(null);
-                  fallbackImport(
+                  fallbackLocalImport(
                     {
                       title: reviewTitle || "Libreto importado",
                       rawText: reviewDialogue || reviewResult.setup.script?.raw_text || "",

@@ -18,17 +18,43 @@ import {
   rewriteLocalScriptDialogue,
   saveImportedLocalScript,
   saveLocalScriptSetup,
+  savePipelineScriptSetup,
   duplicateLocalSetup,
   type ImportedSceneGroup,
 } from "@/lib/local-library";
 
-export { saveLocalScriptSetup };
+export { saveLocalScriptSetup, savePipelineScriptSetup };
 import { requestScriptSegment } from "@/lib/ai/request-script-segment";
 import type { ScriptSegmentResult } from "@/lib/ai/types";
 import { consolidateScriptLines } from "@/lib/consolidate-script-lines";
 import { getDemoScriptSetup } from "@/lib/demo-script";
 import { withTimeout } from "@/lib/browser";
-import { cleanCharacterName, isCharacterCue, splitNamedCue } from "@/lib/script-text";
+import {
+  cleanCharacterName,
+  isCharacterCue,
+  isSceneHeaderLine,
+  splitNamedCue,
+  parseScriptText,
+  parseScriptTextWithTinyLLM,
+  parsedDraftToSceneGroups,
+  type ParsedScriptDraft,
+  type ParsedScriptScene,
+  type ParsedScriptLine,
+} from "@/lib/script-text";
+
+export {
+  consolidateScriptLines,
+  cleanCharacterName,
+  isCharacterCue,
+  isSceneHeaderLine,
+  splitNamedCue,
+  parseScriptText,
+  parseScriptTextWithTinyLLM,
+  parsedDraftToSceneGroups,
+  type ParsedScriptDraft,
+  type ParsedScriptScene,
+  type ParsedScriptLine,
+};
 
 function isSupabaseConfigured() {
   const url =
@@ -368,8 +394,10 @@ async function segmentImportedScript(
 ): Promise<ImportedSceneGroup[] | null> {
   try {
     const segmented = await requestScriptSegment({
-      rawText: draft.rawText,
-      title: draft.title,
+      data: {
+        rawText: draft.rawText,
+        title: draft.title,
+      },
     });
     if (!segmented?.scenes.length) return null;
     const groups = segmented.scenes.map((scene) => ({
@@ -497,7 +525,22 @@ export async function importScriptFromText(
   if (!user) throw new Error("Inicia sesión para importar libretos.");
 
   const useAiSegment = options.useAiSegment === true;
-  const segmentedGroups = useAiSegment ? await segmentImportedScript(draft) : null;
+  let segmentedGroups = useAiSegment ? await segmentImportedScript(draft) : null;
+
+  if (!segmentedGroups || segmentedGroups.length === 0) {
+    try {
+      const parsedDraft = await parseScriptTextWithTinyLLM(draft.rawText, draft.title);
+      if (parsedDraft.scenes.length > 0 && parsedDraft.scenes.some((s) => s.lines.length > 0)) {
+        segmentedGroups = parsedDraftToSceneGroups(parsedDraft);
+      }
+    } catch {
+      const parsedDraft = parseScriptText(draft.rawText, draft.title);
+      if (parsedDraft.scenes.length > 0 && parsedDraft.scenes.some((s) => s.lines.length > 0)) {
+        segmentedGroups = parsedDraftToSceneGroups(parsedDraft);
+      }
+    }
+  }
+
   const parsedLines = segmentedGroups
     ? segmentedGroups.flatMap((group) => group.lines)
     : parseImportedScriptLines(draft.rawText);
@@ -579,7 +622,7 @@ export async function importScriptFromText(
         insertedCharacters.map((character) => [normalizeName(character.name), character.id]),
       );
 
-      const lines: TablesInsert<"script_lines">[] = parsedLines.map((line, index) => ({
+      const rawLines: TablesInsert<"script_lines">[] = parsedLines.map((line, index) => ({
         scene_id: scene.id,
         character_id: line.characterName
           ? (characterByName.get(normalizeName(line.characterName)) ?? null)
@@ -589,7 +632,22 @@ export async function importScriptFromText(
         duration_seconds: estimateLineDuration(line.text),
       }));
 
-      const { error: linesError } = await supabase.from("script_lines").insert(lines);
+      const consolidatedLines: TablesInsert<"script_lines">[] = [];
+      for (const line of rawLines) {
+        const last = consolidatedLines[consolidatedLines.length - 1];
+        if (last && last.character_id === line.character_id && last.scene_id === line.scene_id) {
+          const sep = last.text.endsWith("-") ? "" : " ";
+          last.text = `${last.text.trim()}${sep}${line.text.trim()}`;
+          last.duration_seconds = (last.duration_seconds || 3) + (line.duration_seconds || 3);
+        } else {
+          consolidatedLines.push({ ...line });
+        }
+      }
+      consolidatedLines.forEach((line, idx) => {
+        line.line_order = idx + 1;
+      });
+
+      const { error: linesError } = await supabase.from("script_lines").insert(consolidatedLines);
       if (linesError) throw new Error(linesError.message);
 
       return script;
@@ -859,6 +917,17 @@ async function getScriptBundle(scriptId: string) {
 }
 
 export function parseImportedScriptLines(rawText: string): ImportedScriptLine[] {
+  const parsedDraft = parseScriptText(rawText);
+  const linesFromDraft = parsedDraft.scenes.flatMap((sc) =>
+    sc.lines.map((l) => ({
+      characterName: l.character || null,
+      text: l.parenthetical ? `(${l.parenthetical}) ${l.text}` : l.text,
+    })),
+  );
+  if (linesFromDraft.length > 0) {
+    return linesFromDraft;
+  }
+
   const normalizedLines = rawText
     .replace(/\r/g, "")
     .split("\n")
