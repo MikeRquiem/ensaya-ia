@@ -1,176 +1,73 @@
-# Whisper Teleprompter – Backend v2
+# Whisper Teleprompter + TinyLLM
 
-## Estructura del proyecto
+Backend FastAPI opcional para Ensaya IA: teleprompter con Whisper y detección de personajes con TinyLLM (`Qwen/Qwen2.5-0.5B-Instruct`) o heurística si no hay GPU / faltan dependencias.
+
+## Estructura
 
 ```
 teleprompter/
-├── api.py                        ← FastAPI (punto de entrada)
+├── api.py
 ├── requirements.txt
-├── recordings/                   ← Audios WAV guardados (auto-creado)
+├── recordings/          ← se crea solo
 └── core/
-    ├── teleprompter_engine.py    ← Whisper + AudioProcessor + segmentación
-    └── recording_manager.py     ← Grabación, reproducción y orquestación
+    ├── teleprompter_engine.py
+    ├── recording_manager.py
+    └── tiny_llm_characters.py
 ```
 
----
+## Cómo levantarlo
 
-## Iniciar el servidor
+Desde esta carpeta (`src/teleprompter`):
 
 ```bash
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# macOS / Linux
+source venv/bin/activate
+
 pip install -r requirements.txt
 uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Documentación interactiva: `http://localhost:8000/docs`
+Docs interactivas: http://localhost:8000/docs
 
----
+En el frontend (`.env`):
+
+```env
+VITE_TELEPROMPTER_URL=http://127.0.0.1:8000
+# Opcional, calibración con Ollama:
+# VITE_OLLAMA_URL=http://127.0.0.1:11434
+```
+
+Si esas variables **no** están definidas, la app web no hace fetch a localhost y usa la heurística del navegador.
 
 ## Variables de entorno
 
-| Variable         | Default           | Descripción                                 |
-| ---------------- | ----------------- | ------------------------------------------- |
-| `DB_PATH`        | `teleprompter.db` | Ruta a la base SQLite                       |
-| `RECORDINGS_DIR` | `recordings/`     | Carpeta donde se guardan los WAVs           |
-| `WHISPER_MODEL`  | `small`           | Tamaño del modelo (tiny/small/medium/large) |
-| `WHISPER_LANG`   | `es`              | Idioma del guion                            |
+| Variable | Default | Descripción |
+| --- | --- | --- |
+| `DB_PATH` | `teleprompter.db` | SQLite local |
+| `RECORDINGS_DIR` | `recordings/` | WAVs |
+| `WHISPER_MODEL` | `small` | tiny/small/medium/large |
+| `WHISPER_LANG` | `es` | Idioma Whisper |
+| `TINY_LLM_MODEL` | `Qwen/Qwen2.5-0.5B-Instruct` | Modelo Hugging Face |
+| `CORS_ORIGINS` | (vacío) | Orígenes extra, separados por coma |
+| `RAILWAY_PUBLIC_DOMAIN` | (vacío) | Dominio público Railway |
 
----
+CORS incluye `http://localhost:8080` y `*.up.railway.app`.
 
-## Flujos principales
+## Rutas de personajes
 
-### Flujo A – Grabar las líneas del "otro personaje"
+Alineadas con `tiny-character-detector.ts` / `script-parser.ts`:
 
-```
-Frontend (Ensaya IA)                  Backend (FastAPI)
-────────────────────                  ─────────────────────────────────
+- `GET /characters/hardware` → `{ device, device_name, gpu_available, vram_gb, dtype, model_id }`
+- `POST /characters/detect` body `{ "script_text": "..." }` → `{ characters, alias_map, discarded, line_counts, hardware, used_tiny_llm }`
+- `POST /characters/calibrate` body `{ "sample_text": "..." }` → `{ formatoDetectado, xMinPersonaje, xMinDialogo, usaPrefijoEnLinea, aliasPersonajes }`
 
-1. POST /script/load/file             → Extrae texto y personajes del guion
-   ← { characters: {ROMEO:12, JULIETA:10} }
+Si faltan `torch` / `transformers` o falla la carga del modelo, las rutas responden con heurística (`used_tiny_llm: false`), **nunca** con 500 por eso.
 
-2. POST /session                      → Crea sesión
-   body: { script_id, my_character:"JULIETA",
-           other_character:"ROMEO" }
-   ← { session_id: "abc-123" }
+## Nota
 
-3. WS  /ws/record/abc-123             → Conectar WebSocket
-
-4. Servidor envía →  { event:"segment", index:3,
-                       text:"¿Eres Romeo, o es sólo el nombre?",
-                       progress:"1/12" }
-
-5. Usuario pulsa REC en la UI
-   Cliente envía → { action:"record_start" }
-
-6. El usuario habla. El cliente captura audio con MediaRecorder
-   y va enviando chunks:
-   Cliente envía → { action:"audio_chunk", data:"<base64 PCM float32>" }
-   (en loop mientras graba)
-
-7. Usuario suelta REC
-   Cliente envía → { action:"record_stop" }
-   Servidor guarda WAV en disco y en SQLite →
-   ← { event:"saved", recording_id:"xyz", duration_sec:3.2 }
-
-8. Servidor avanza automáticamente →
-   ← { event:"segment", index:7, text:"...", progress:"2/12" }
-
-9. Repetir pasos 5-8 para cada segmento.
-
-10. Al terminar →
-    ← { event:"done", message:"¡Todas las líneas grabadas! 🎉" }
-```
-
----
-
-### Flujo B – Ensayo con reproducción automática
-
-```
-Frontend (Ensaya IA)                  Backend (FastAPI)
-────────────────────                  ─────────────────────────────────
-
-1. (El guion ya está cargado, la sesión ya existe con grabaciones de ROMEO)
-
-2. WS  /ws/rehearsal/abc-123          → Conectar WebSocket
-
-3. Cliente envía → { action:"start", mic_index:0 }
-   Servidor carga Whisper y empieza a escuchar el micrófono →
-   ← { event:"status", message:"Ensayo iniciado 🎤" }
-
-4. JULIETA (usuario) habla en voz alta.
-   Whisper transcribe →
-   ← { event:"transcription", text:"pero qué luz", confidence:0.9, position:234 }
-
-5. El teleprompter avanza. Cuando llega a un segmento de ROMEO:
-   ← { event:"segment_change", segment:{character:"ROMEO", text:"..."}, is_my_turn:false }
-   ← { event:"playback_start", character:"ROMEO" }
-   → El servidor reproduce el audio de ROMEO en los altavoces del servidor
-     (o el frontend recibe playback_start y reproduce el audio desde /recordings/<file>)
-   ← { event:"playback_finish", character:"ROMEO" }
-
-6. Si una línea de ROMEO no tiene audio grabado:
-   ← { event:"missing_audio", segment:{character:"ROMEO", text:"..."} }
-   → La UI puede mostrar el texto en pantalla como fallback.
-
-7. Para detener: { action:"stop" }
-   Para reiniciar: { action:"reset" }
-```
-
----
-
-## Nota sobre reproducción en el frontend vs. servidor
-
-El `PlaybackEngine` reproduce audio **en el servidor** (útil para desarrollo
-local o apps de escritorio). En produccion en el navegador, cuando
-recibas `playback_start` con el `character` y el `event:"segment_change"`,
-el frontend puede:
-
-```js
-// En el WebSocket message handler:
-if (msg.event === "playback_start") {
-  const url = `/recordings/${sessionId}_seg${segmentIndex}_*.wav`;
-  // Mejor: obtén la URL del evento missing_audio o de GET /recording/{session}/{char}
-  const audio = new Audio(audioUrl);
-  audio.play();
-}
-```
-
-Para que el frontend controle la reproducción, llama primero a:
-
-```
-GET /recording/{session_id}/{character}
-→ lista de { segment_index, audio_url, ... }
-```
-
-y cachea las URLs en el cliente.
-
----
-
-## Tablas SQLite añadidas
-
-```sql
--- Sesiones de ensayo
-CREATE TABLE rehearsal_sessions (
-    id              TEXT PRIMARY KEY,
-    script_id       INTEGER NOT NULL,
-    my_character    TEXT    NOT NULL,
-    other_character TEXT    NOT NULL,
-    created_at      TEXT    NOT NULL
-);
-
--- Grabaciones por segmento
-CREATE TABLE character_recordings (
-    id              TEXT PRIMARY KEY,
-    session_id      TEXT    NOT NULL,
-    script_id       INTEGER NOT NULL,
-    character       TEXT    NOT NULL,
-    segment_index   INTEGER NOT NULL,
-    segment_text    TEXT    NOT NULL,
-    audio_path      TEXT    NOT NULL,
-    duration_sec    REAL    NOT NULL,
-    created_at      TEXT    NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES rehearsal_sessions(id)
-);
-```
-
-Las tablas se crean automáticamente si no existen; no se toca ninguna
-tabla pre-existente en tu base de datos.
+Este backend es **opcional**. Ensaya IA funciona en el navegador sin él; el ensayo por voz/lectura no depende de estas rutas.

@@ -1,7 +1,8 @@
+/* eslint-disable no-useless-escape */
 /**
  * script-parser.ts
  * Parser Espacial (Geométrico) + Detección Multi-Columna + Rectificación de Personajes con TinyLLM.
- * 
+ *
  * Resuelve los desafíos críticos en libretos:
  * 1. Documentos en DOS COLUMNAS (PDF y Texto):
  *    Detecta automáticamente si cada página o bloque de texto está organizado en 1 o 2 columnas.
@@ -17,27 +18,30 @@
  *    y encabezados cinematográficos ("INT.", "EXT.").
  */
 
-import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { getOllamaUrl, getTeleprompterUrl } from "./optional-services";
 
 // ─── 1. Esquema estricto para forzar al TinyLLM (Structured Output) ───────────
 
 export const ScriptRulesSchema = z.object({
   formatoDetectado: z
-    .enum(['cine_estandar', 'teatro_hispano', 'mixto'])
-    .describe('Formato de maquetación del libreto detectado'),
+    .enum(["cine_estandar", "teatro_hispano", "mixto"])
+    .describe("Formato de maquetación del libreto detectado"),
   xMinPersonaje: z
     .number()
-    .describe('Coordenada X aproximada donde inician los nombres de personajes centrados'),
-  xMinDialogo: z
-    .number()
-    .describe('Coordenada X aproximada donde inicia el bloque de diálogo'),
+    .describe("Coordenada X aproximada donde inician los nombres de personajes centrados"),
+  xMinDialogo: z.number().describe("Coordenada X aproximada donde inicia el bloque de diálogo"),
   usaPrefijoEnLinea: z
     .boolean()
-    .describe('True si el personaje va en la misma línea que el diálogo (ej. JUAN.- Hola o JUAN: Hola)'),
+    .describe(
+      "True si el personaje va en la misma línea que el diálogo (ej. JUAN.- Hola o JUAN: Hola)",
+    ),
   aliasPersonajes: z
     .record(z.string(), z.string())
-    .describe('Mapa de variantes de nombres a nombre canónico, ej. {"GUARDIA 1": "GUARDIA", "D. JUAN": "DON JUAN"}'),
+    .describe(
+      'Mapa de variantes de nombres a nombre canónico, ej. {"GUARDIA 1": "GUARDIA", "D. JUAN": "DON JUAN"}',
+    ),
 });
 
 export type ScriptRules = z.infer<typeof ScriptRulesSchema>;
@@ -51,7 +55,7 @@ export interface RawPdfLine {
 
 export interface ParsedGeometricLine {
   id: string;
-  type: 'encabezado_acto' | 'encabezado_escena' | 'personaje' | 'acotacion' | 'dialogo';
+  type: "encabezado_acto" | "encabezado_escena" | "personaje" | "acotacion" | "dialogo";
   characterName?: string;
   parenthetical?: string;
   text: string;
@@ -86,30 +90,112 @@ interface PdfFragment {
 
 // Lista de palabras o títulos que no representan personajes hablantes
 const STAGE_BLACKLIST = new Set([
-  'ACTO', 'ESCENA', 'CUADRO', 'JORNADA', 'PRÓLOGO', 'PROLOGO', 'EPÍLOGO', 'EPILOGO',
-  'TELÓN', 'TELON', 'OSCURO', 'APAGÓN', 'APAGON', 'MUTACIÓN', 'MUTACION',
-  'FIN', 'THE END', 'FIN DEL ACTO', 'CONTINÚA', 'CONTINUA', 'CONTINUED',
-  'CORTE A', 'FADE IN', 'FADE OUT', 'PAUSA', 'SILENCIO', 'TRANSICIÓN', 'TRANSICION',
-  'PERSONAJES', 'REPARTO', 'DRAMATIS PERSONAE', 'ELENCO', 'ACTORES', 'PERSONAJES QUE INTERVIENEN',
-  'GUIÓN', 'GUION', 'VER TAMBIÉN', 'VER TAMBIEN', 'TÍTULO', 'TITULO', 'AUTOR',
-  'ADAPTACIÓN', 'ADAPTACION', 'ESCENOGRAFÍA', 'ESCENOGRAFIA', 'VESTUARIO',
-  'OBRAS DE TEATRO', 'REPRESENTAR CON LOS NIÑOS', 'MÁS OBRAS DE TEATRO', 'MÁS OBRAS',
-  'DESCRIPCIÓN', 'DESCRIPCION', 'NOTAS DEL DIRECTOR', 'INTRODUCCIÓN', 'INTRODUCCION',
-  'INTENCIÓN DRAMÁTICA', 'INTENCION DRAMATICA',
-  'ELEMENTOS TEATRALES', 'ELEMENTOS ESCÉNICOS', 'ELEMENTOS ESCENICOS',
-  'ELEMENTOS DE LA ESCENA', 'ELEMENTOS ESCENOGRÁFICOS', 'ELEMENTOS ESCENOGRAFICOS',
-  'ELEMENTOS DRAMÁTICOS', 'ELEMENTOS DRAMATICOS', 'ELEMENTO DRAMÁTICO', 'ELEMENTO DRAMATICO',
-  'OBJETIVO DRAMÁTICO', 'OBJETIVO DRAMATICO', 'OBJETIVO',
-  'TRAZO ESCÉNICO', 'TRAZO ESCENICO', 'HÁGANSE PREGUNTAS', 'HAGANSE PREGUNTAS',
-  'AUDIO', 'AUDIO DE FIESTA', 'AUDIO DE FIESTA QUEDA',
-  'ILUMINACIÓN', 'ILUMINACION', 'AMBIENTACIÓN', 'AMBIENTACION',
-  'PRIMERA EDICIÓN', 'PRIMERA EDICION', 'OCTUBRE, 2019', 'EDICIÓN', 'EDICION',
-  'TU MENTIRA', '“TU MENTIRA”', '"TU MENTIRA"',
-  'COMISIÓN NACIONAL DE LOS DERECHOS HUMANOS', 'COMISION NACIONAL DE LOS DERECHOS HUMANOS',
-  'CONSIDERACIONES', 'CONSIDERACIONES PARA MONTAR ESTA OBRA DE TEATRO',
-  'CONTENIDO', 'ANEXO', 'CONCLUSIÓN', 'CONCLUSION', 'BUENA SUERTE',
-  'PD', 'P.D.', 'P.D', 'POSTDATA', 'POST DATA', 'NOTA FINAL',
-  'CONVENTO', 'CALATRAVA'
+  "ACTO",
+  "ESCENA",
+  "CUADRO",
+  "JORNADA",
+  "PRÓLOGO",
+  "PROLOGO",
+  "EPÍLOGO",
+  "EPILOGO",
+  "TELÓN",
+  "TELON",
+  "OSCURO",
+  "APAGÓN",
+  "APAGON",
+  "MUTACIÓN",
+  "MUTACION",
+  "FIN",
+  "THE END",
+  "FIN DEL ACTO",
+  "CONTINÚA",
+  "CONTINUA",
+  "CONTINUED",
+  "CORTE A",
+  "FADE IN",
+  "FADE OUT",
+  "PAUSA",
+  "SILENCIO",
+  "TRANSICIÓN",
+  "TRANSICION",
+  "PERSONAJES",
+  "REPARTO",
+  "DRAMATIS PERSONAE",
+  "ELENCO",
+  "ACTORES",
+  "PERSONAJES QUE INTERVIENEN",
+  "GUIÓN",
+  "GUION",
+  "VER TAMBIÉN",
+  "VER TAMBIEN",
+  "TÍTULO",
+  "TITULO",
+  "AUTOR",
+  "ADAPTACIÓN",
+  "ADAPTACION",
+  "ESCENOGRAFÍA",
+  "ESCENOGRAFIA",
+  "VESTUARIO",
+  "OBRAS DE TEATRO",
+  "REPRESENTAR CON LOS NIÑOS",
+  "MÁS OBRAS DE TEATRO",
+  "MÁS OBRAS",
+  "DESCRIPCIÓN",
+  "DESCRIPCION",
+  "NOTAS DEL DIRECTOR",
+  "INTRODUCCIÓN",
+  "INTRODUCCION",
+  "INTENCIÓN DRAMÁTICA",
+  "INTENCION DRAMATICA",
+  "ELEMENTOS TEATRALES",
+  "ELEMENTOS ESCÉNICOS",
+  "ELEMENTOS ESCENICOS",
+  "ELEMENTOS DE LA ESCENA",
+  "ELEMENTOS ESCENOGRÁFICOS",
+  "ELEMENTOS ESCENOGRAFICOS",
+  "ELEMENTOS DRAMÁTICOS",
+  "ELEMENTOS DRAMATICOS",
+  "ELEMENTO DRAMÁTICO",
+  "ELEMENTO DRAMATICO",
+  "OBJETIVO DRAMÁTICO",
+  "OBJETIVO DRAMATICO",
+  "OBJETIVO",
+  "TRAZO ESCÉNICO",
+  "TRAZO ESCENICO",
+  "HÁGANSE PREGUNTAS",
+  "HAGANSE PREGUNTAS",
+  "AUDIO",
+  "AUDIO DE FIESTA",
+  "AUDIO DE FIESTA QUEDA",
+  "ILUMINACIÓN",
+  "ILUMINACION",
+  "AMBIENTACIÓN",
+  "AMBIENTACION",
+  "PRIMERA EDICIÓN",
+  "PRIMERA EDICION",
+  "OCTUBRE, 2019",
+  "EDICIÓN",
+  "EDICION",
+  "TU MENTIRA",
+  "“TU MENTIRA”",
+  '"TU MENTIRA"',
+  "COMISIÓN NACIONAL DE LOS DERECHOS HUMANOS",
+  "COMISION NACIONAL DE LOS DERECHOS HUMANOS",
+  "CONSIDERACIONES",
+  "CONSIDERACIONES PARA MONTAR ESTA OBRA DE TEATRO",
+  "CONTENIDO",
+  "ANEXO",
+  "CONCLUSIÓN",
+  "CONCLUSION",
+  "BUENA SUERTE",
+  "PD",
+  "P.D.",
+  "P.D",
+  "POSTDATA",
+  "POST DATA",
+  "NOTA FINAL",
+  "CONVENTO",
+  "CALATRAVA",
 ]);
 
 // Prefijos de notas escénicas, intenciones dramáticas y dirección técnica
@@ -129,8 +215,7 @@ const LOCATION_HEADING_RE =
   /^(?:En\s+(?:el|la|un|una)\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü\s]{3,30}[\.\s]*$|Interior[\.\s]|Exterior[\.\s])/i;
 
 // Divisores decorativos entre escenas (ej. ".-.-.-.-.-.-.-.-.-.-", "***", "---")
-const DIVIDER_RE =
-  /^(?:[.\-_*~=—–\s]{4,}|(?:\.-)+)$/;
+const DIVIDER_RE = /^(?:[.\-_*~=—–\s]{4,}|(?:\.-)+)$/;
 
 // ─── 2. Detección Inteligente de Columnas (Medianil / Gutter) ─────────────────
 
@@ -146,8 +231,8 @@ function detectTwoColumnGutter(fragments: PdfFragment[], pageWidth: number): num
   if (contentFrags.length < 8) return null;
 
   // Franja central donde comúnmente se ubica el medianil (30% a 70% del ancho)
-  const minSplit = pageWidth * 0.30;
-  const maxSplit = pageWidth * 0.70;
+  const minSplit = pageWidth * 0.3;
+  const maxSplit = pageWidth * 0.7;
 
   let bestSplitX: number | null = null;
   let maxGutterWidth = 0;
@@ -180,7 +265,12 @@ function detectTwoColumnGutter(fragments: PdfFragment[], pageWidth: number): num
     // - Al menos 4 fragmentos tanto a la izquierda como a la derecha
     // - Máximo 5% de fragmentos cruzando la frontera
     // - Separación real en blanco de al menos 12pt
-    if (leftCount >= 4 && rightCount >= 4 && straddlingCount <= maxAllowedStraddling && gutterWidth >= 12) {
+    if (
+      leftCount >= 4 &&
+      rightCount >= 4 &&
+      straddlingCount <= maxAllowedStraddling &&
+      gutterWidth >= 12
+    ) {
       if (gutterWidth > maxGutterWidth) {
         maxGutterWidth = gutterWidth;
         bestSplitX = Math.round((closestLeftEdge + closestRightEdge) / 2);
@@ -212,7 +302,10 @@ function groupFragmentsIntoLines(items: PdfFragment[], pageNum: number): RawPdfL
 
   for (const y of sortedYs) {
     const frags = rowMap.get(y)!.sort((a, b) => a.x - b.x);
-    const rowText = frags.map((f) => f.text).join(' ').trim();
+    const rowText = frags
+      .map((f) => f.text)
+      .join(" ")
+      .trim();
     if (!rowText) continue;
 
     result.push({
@@ -229,13 +322,13 @@ function groupFragmentsIntoLines(items: PdfFragment[], pageNum: number): RawPdfL
 // ─── 3. Lector Geométrico de PDF con Desentrelazado de Columnas ───────────────
 
 export async function extractGeometricLines(pdfBuffer: Uint8Array): Promise<RawPdfLine[]> {
-  const pdfjsLib = await import('pdfjs-dist');
-  
-  if (typeof window !== 'undefined' && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
+  const pdfjsLib = await import("pdfjs-dist");
+
+  if (typeof window !== "undefined" && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
     try {
       pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-        'pdfjs-dist/build/pdf.worker.min.mjs',
-        import.meta.url
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url,
       ).toString();
     } catch {
       // Worker fallback
@@ -255,7 +348,7 @@ export async function extractGeometricLines(pdfBuffer: Uint8Array): Promise<RawP
     // Extraer fragmentos no vacíos
     const fragments: PdfFragment[] = [];
     for (const item of content.items) {
-      if (!('str' in item) || !item.str.trim()) continue;
+      if (!("str" in item) || !item.str.trim()) continue;
       const x = Math.round(item.transform[4]);
       const y = Math.round(item.transform[5]);
       const width = Math.round(item.width || item.str.length * 6);
@@ -271,14 +364,14 @@ export async function extractGeometricLines(pdfBuffer: Uint8Array): Promise<RawP
       // PÁGINA EN DOS COLUMNAS:
       // Identificar si existen fragmentos superiores que crucen toda la página antes de que inicien las columnas
       const straddlingWide = fragments.filter(
-        (f) => f.x < gutterX && (f.x + f.width) > gutterX && f.width >= 35
+        (f) => f.x < gutterX && f.x + f.width > gutterX && f.width >= 35,
       );
       const normalFrags = fragments.filter(
-        (f) => !(f.x < gutterX && (f.x + f.width) > gutterX && f.width >= 35)
+        (f) => !(f.x < gutterX && f.x + f.width > gutterX && f.width >= 35),
       );
 
-      const leftItems = normalFrags.filter((f) => (f.x + f.width / 2) < gutterX);
-      const rightItems = normalFrags.filter((f) => (f.x + f.width / 2) >= gutterX);
+      const leftItems = normalFrags.filter((f) => f.x + f.width / 2 < gutterX);
+      const rightItems = normalFrags.filter((f) => f.x + f.width / 2 >= gutterX);
 
       // Determinar la cota superior donde inician las dos columnas
       const leftTopY = leftItems.length > 0 ? Math.max(...leftItems.map((f) => f.y)) : 0;
@@ -316,7 +409,7 @@ export async function extractGeometricLines(pdfBuffer: Uint8Array): Promise<RawP
  * (separadas por múltiples espacios o tabulaciones), las desentrelaza automáticamente.
  */
 export function extractGeometricLinesFromText(rawText: string): RawPdfLine[] {
-  const rawLines = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const rawLines = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
 
   // Detectar si el texto tiene formato de 2 columnas lado a lado (separadas por 4+ espacios o tabulador)
   const sideBySideRe = /^([^\t]+?)(?:\t+|\s{4,})([^\t]+)$/;
@@ -390,8 +483,10 @@ export function extractExplicitCastList(lines: RawPdfLine[]): Set<string> {
   const cast = new Set<string>();
   let inCastSection = false;
 
-  const headerRe = /^(?:PERSONAJES|REPARTO|DRAMATIS PERSONAE|ELENCO|ACTORES|PERSONAJES QUE INTERVIENEN)(?:\s*\([^)]+\))?[:\s]*$/i;
-  const endSectionRe = /^(?:GUIÓN|GUION|ACTO|ESCENA|CUADRO|INICIO|PRIMER ACTO|SEGUNDO ACTO|TERCER ACTO|OBRA|DESCRIPCIÓN|PRÓLOGO|PROLOGO|CONTENIDO|CONSIDERACIONES)[:\s]*$/i;
+  const headerRe =
+    /^(?:PERSONAJES|REPARTO|DRAMATIS PERSONAE|ELENCO|ACTORES|PERSONAJES QUE INTERVIENEN)(?:\s*\([^)]+\))?[:\s]*$/i;
+  const endSectionRe =
+    /^(?:GUIÓN|GUION|ACTO|ESCENA|CUADRO|INICIO|PRIMER ACTO|SEGUNDO ACTO|TERCER ACTO|OBRA|DESCRIPCIÓN|PRÓLOGO|PROLOGO|CONTENIDO|CONSIDERACIONES)[:\s]*$/i;
 
   for (let i = 0; i < lines.length; i++) {
     const text = lines[i].text.trim();
@@ -416,34 +511,37 @@ export function extractExplicitCastList(lines: RawPdfLine[]): Set<string> {
 
       // Limpiar viñetas especiales (●, •, ○, ■, ▪, *, -, +), numeración (1., 2.), acotaciones "(enferma)"
       let clean = text
-        .replace(/^[\u2022\u25cf\u25cb\u25a0\u25aa\u2043\u2219\u00b7\-\*\+\d\.\s–—]+/, '')
-        .replace(/\([^)]+\)/g, '')
+        .replace(/^[\u2022\u25cf\u25cb\u25a0\u25aa\u2043\u2219\u00b7\-\*\+\d\.\s–—]+/, "")
+        .replace(/\([^)]+\)/g, "")
         .trim();
 
       // Si la línea tiene formato "Personaje [descripción] – Actor" (ej. "Don Juan Tenorio – Belén", "Enterrador – Efraín")
-      clean = clean.replace(/\s*[\-–—:]\s*[A-Za-zÁÉÍÓÚÑÜáéíóúñü0-9\.\s]+$/, '').trim();
+      clean = clean.replace(/\s*[\-–—:]\s*[A-Za-zÁÉÍÓÚÑÜáéíóúñü0-9\.\s]+$/, "").trim();
 
       // Quitar descripción de rol tras coma (ej. "Butarelli, hostelero" -> "Butarelli")
-      if (clean.includes(',')) {
-        const beforeComma = clean.split(',')[0].trim();
+      if (clean.includes(",")) {
+        const beforeComma = clean.split(",")[0].trim();
         if (beforeComma.length >= 2 && beforeComma.length <= 30) {
           clean = beforeComma;
         }
       }
 
-      clean = clean.replace(/[:\.\-–—]+.*$/, '').trim().toUpperCase();
+      clean = clean
+        .replace(/[:\.\-–—]+.*$/, "")
+        .trim()
+        .toUpperCase();
 
       if (clean && clean.length >= 2 && clean.length <= 35 && !STAGE_BLACKLIST.has(clean)) {
         let norm = clean;
-        if (norm === 'DON JUAN TENORIO') norm = 'DON JUAN';
-        if (norm === 'DON LUIS MEJÍA') norm = 'DON LUIS';
-        if (norm === 'MARCOS CIUTTI') norm = 'CIUTTI';
-        if (norm === 'DOÑA INÉS DE ULLOA' || norm === 'INÉS') norm = 'DOÑA INÉS';
-        if (norm === 'DON GONZALO DE ULLOA') norm = 'COMENDADOR';
-        if (norm === 'ABUELITA') norm = 'ABUELA';
-        if (norm === 'MAMÁ' || norm === 'MAMA') norm = 'MADRE';
-        if (norm === 'PAPÁ' || norm === 'PAPA') norm = 'PADRE';
-        if (norm === 'PETER') norm = 'PETER PAN';
+        if (norm === "DON JUAN TENORIO") norm = "DON JUAN";
+        if (norm === "DON LUIS MEJÍA") norm = "DON LUIS";
+        if (norm === "MARCOS CIUTTI") norm = "CIUTTI";
+        if (norm === "DOÑA INÉS DE ULLOA" || norm === "INÉS") norm = "DOÑA INÉS";
+        if (norm === "DON GONZALO DE ULLOA") norm = "COMENDADOR";
+        if (norm === "ABUELITA") norm = "ABUELA";
+        if (norm === "MAMÁ" || norm === "MAMA") norm = "MADRE";
+        if (norm === "PAPÁ" || norm === "PAPA") norm = "PADRE";
+        if (norm === "PETER") norm = "PETER PAN";
         cast.add(norm);
       }
     }
@@ -460,36 +558,42 @@ export function extractExplicitCastList(lines: RawPdfLine[]): Set<string> {
 export function rectifyCharacterCandidate(
   candidate: string,
   canonicalCast: Set<string>,
-  knownCharacters: Set<string>
+  knownCharacters: Set<string>,
 ): { rectifiedName: string; isChimera: boolean; secondName?: string } {
   let name = candidate
-    .replace(/\((?:V\.?O\.?|O\.?S\.?|OFF|CONT'?D|VOZ|EN OFF|APARTE)\)/gi, '')
-    .replace(/[:\.\-—–]+$/, '')
+    .replace(/\((?:V\.?O\.?|O\.?S\.?|OFF|CONT'?D|VOZ|EN OFF|APARTE)\)/gi, "")
+    .replace(/[:\.\-—–]+$/, "")
     .trim()
     .toUpperCase();
 
   // 1. Quitar artículos iniciales ("EL LOBO" -> "LOBO", "LA ABUELITA" -> "ABUELA")
-  name = name.replace(/^(?:EL|LA|LOS|LAS)\s+/i, '');
+  name = name.replace(/^(?:EL|LA|LOS|LAS)\s+/i, "");
 
   // 2. Normalización de sinónimos, alias teatrales y diminutivos en español
-  if (name === 'ABUELITA' || name === 'LA ABUELITA' || name === 'ABUELA') {
-    name = 'ABUELA';
-  } else if (name === 'MAMÁ' || name === 'MAMA' || name === 'MADRE') {
-    name = 'MADRE';
-  } else if (name === 'PAPÁ' || name === 'PAPA' || name === 'PADRE') {
-    name = 'PADRE';
-  } else if (name === 'PETER') {
-    name = (canonicalCast.has('PETER PAN') || knownCharacters.has('PETER PAN')) ? 'PETER PAN' : 'PETER';
-  } else if (name === 'DON JUAN TENORIO') {
-    name = 'DON JUAN';
-  } else if (name === 'DON LUIS MEJÍA' || name === 'DON LUIS MEJIA') {
-    name = 'DON LUIS';
-  } else if (name === 'MARCOS CIUTTI') {
-    name = 'CIUTTI';
-  } else if (name === 'DOÑA INÉS DE ULLOA' || name === 'DONA INES DE ULLOA' || name === 'INÉS' || name === 'INES') {
-    name = 'DOÑA INÉS';
-  } else if (name === 'DON GONZALO DE ULLOA' || name === 'DON GONZALO') {
-    name = 'COMENDADOR';
+  if (name === "ABUELITA" || name === "LA ABUELITA" || name === "ABUELA") {
+    name = "ABUELA";
+  } else if (name === "MAMÁ" || name === "MAMA" || name === "MADRE") {
+    name = "MADRE";
+  } else if (name === "PAPÁ" || name === "PAPA" || name === "PADRE") {
+    name = "PADRE";
+  } else if (name === "PETER") {
+    name =
+      canonicalCast.has("PETER PAN") || knownCharacters.has("PETER PAN") ? "PETER PAN" : "PETER";
+  } else if (name === "DON JUAN TENORIO") {
+    name = "DON JUAN";
+  } else if (name === "DON LUIS MEJÍA" || name === "DON LUIS MEJIA") {
+    name = "DON LUIS";
+  } else if (name === "MARCOS CIUTTI") {
+    name = "CIUTTI";
+  } else if (
+    name === "DOÑA INÉS DE ULLOA" ||
+    name === "DONA INES DE ULLOA" ||
+    name === "INÉS" ||
+    name === "INES"
+  ) {
+    name = "DOÑA INÉS";
+  } else if (name === "DON GONZALO DE ULLOA" || name === "DON GONZALO") {
+    name = "COMENDADOR";
   }
 
   // Si coincide exactamente con el reparto canónico o ya conocido
@@ -499,26 +603,26 @@ export function rectifyCharacterCandidate(
 
   // 3. Detección Avanzada de QUIMERAS (ej. "NARRADOR LOBO", "CAPERUCITA LOBO", "LOBO ABUELITA")
   const pool = new Set([...canonicalCast, ...knownCharacters]);
-  pool.add('ABUELITA');
-  pool.add('ABUELA');
-  pool.add('MADRE');
-  pool.add('MAMÁ');
-  pool.add('LOBO');
-  pool.add('NARRADOR');
-  pool.add('CAPERUCITA');
-  pool.add('PETER');
-  pool.add('PETER PAN');
+  pool.add("ABUELITA");
+  pool.add("ABUELA");
+  pool.add("MADRE");
+  pool.add("MAMÁ");
+  pool.add("LOBO");
+  pool.add("NARRADOR");
+  pool.add("CAPERUCITA");
+  pool.add("PETER");
+  pool.add("PETER PAN");
 
   const words = name.split(/\s+/);
 
   if (words.length >= 2) {
     // Probar si el nombre está formado por dos personajes conocidos
     for (let i = 1; i < words.length; i++) {
-      const part1 = words.slice(0, i).join(' ');
-      const part2 = words.slice(i).join(' ');
+      const part1 = words.slice(0, i).join(" ");
+      const part2 = words.slice(i).join(" ");
 
-      const norm1 = part1 === 'ABUELITA' ? 'ABUELA' : part1 === 'PETER' ? 'PETER PAN' : part1;
-      const norm2 = part2 === 'ABUELITA' ? 'ABUELA' : part2 === 'PETER' ? 'PETER PAN' : part2;
+      const norm1 = part1 === "ABUELITA" ? "ABUELA" : part1 === "PETER" ? "PETER PAN" : part1;
+      const norm2 = part2 === "ABUELITA" ? "ABUELA" : part2 === "PETER" ? "PETER PAN" : part2;
 
       const p1Matches = pool.has(part1) || pool.has(norm1);
       const p2Matches = pool.has(part2) || pool.has(norm2);
@@ -535,68 +639,74 @@ export function rectifyCharacterCandidate(
 
 // ─── 5. Calibración con el TinyLLM (Ollama, FastAPI o Heurística Espacial) ─────
 
-const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
-const DEFAULT_TELEPROMPTER_URL = 'http://localhost:8000';
-
 export async function calibrateScriptWithTinyLLM(
   sampleLines: RawPdfLine[],
-  ollamaUrl: string = DEFAULT_OLLAMA_URL,
-  teleprompterUrl: string = DEFAULT_TELEPROMPTER_URL
-): Promise<{ rules: ScriptRules; source: 'ollama' | 'fastapi' | 'spatial_heuristic' }> {
+  ollamaUrl?: string,
+  teleprompterUrl?: string,
+): Promise<{ rules: ScriptRules; source: "ollama" | "fastapi" | "spatial_heuristic" }> {
   const sample = sampleLines.slice(0, 80);
-  const sampleText = sample.map((l) => `[X=${l.x}] ${l.text}`).join('\n');
+  const sampleText = sample.map((l) => `[X=${l.x}] ${l.text}`).join("\n");
+  const ollamaBase = (ollamaUrl?.trim() || getOllamaUrl() || "").replace(/\/$/, "");
+  const teleprompterBase = (teleprompterUrl?.trim() || getTeleprompterUrl() || "").replace(
+    /\/$/,
+    "",
+  );
 
-  // 1. Intentar con Ollama local (ej. Qwen2.5:1.5B o Llama-3.2:1B)
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`${ollamaUrl.replace(/\/$/, '')}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'qwen2.5:1.5b',
-        prompt: `Analiza estas líneas de un libreto teatral o cinematográfico con su sangría X y extrae sus reglas de formato:\n\n${sampleText}`,
-        stream: false,
-        format: zodToJsonSchema(ScriptRulesSchema),
-        options: { temperature: 0.0 },
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+  // 1. Ollama solo si VITE_OLLAMA_URL está definida
+  if (ollamaBase) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(`${ollamaBase}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "qwen2.5:1.5b",
+          prompt: `Analiza estas líneas de un libreto teatral o cinematográfico con su sangría X y extrae sus reglas de formato:\n\n${sampleText}`,
+          stream: false,
+          format: zodToJsonSchema(ScriptRulesSchema),
+          options: { temperature: 0.0 },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    if (res.ok) {
-      const data = await res.json();
-      const parsed = ScriptRulesSchema.parse(JSON.parse(data.response));
-      return { rules: parsed, source: 'ollama' };
+      if (res.ok) {
+        const data = await res.json();
+        const parsed = ScriptRulesSchema.parse(JSON.parse(data.response));
+        return { rules: parsed, source: "ollama" };
+      }
+    } catch {
+      // Continuar
     }
-  } catch {
-    // Continuar
   }
 
-  // 2. Intentar con el backend FastAPI de Python (/characters/calibrate)
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`${teleprompterUrl.replace(/\/$/, '')}/characters/calibrate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sample_text: sampleText }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+  // 2. FastAPI solo si VITE_TELEPROMPTER_URL (o compat) está definida
+  if (teleprompterBase) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(`${teleprompterBase}/characters/calibrate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sample_text: sampleText }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    if (res.ok) {
-      const data = await res.json();
-      const parsed = ScriptRulesSchema.parse(data);
-      return { rules: parsed, source: 'fastapi' };
+      if (res.ok) {
+        const data = await res.json();
+        const parsed = ScriptRulesSchema.parse(data);
+        return { rules: parsed, source: "fastapi" };
+      }
+    } catch {
+      // Continuar al fallback espacial
     }
-  } catch {
-    // Continuar al fallback espacial
   }
 
-  // 3. Fallback espacial determinista en CPU
+  // 3. Fallback espacial determinista en el navegador (sin fetch)
   const rules = calibrateSpatiallyByHeuristics(sampleLines);
-  return { rules, source: 'spatial_heuristic' };
+  return { rules, source: "spatial_heuristic" };
 }
 
 export function calibrateSpatiallyByHeuristics(lines: RawPdfLine[]): ScriptRules {
@@ -634,7 +744,7 @@ export function calibrateSpatiallyByHeuristics(lines: RawPdfLine[]): ScriptRules
   }
 
   const usaPrefijoEnLinea = hasInlinePrefixCount >= 3;
-  const formatoDetectado = usaPrefijoEnLinea ? 'teatro_hispano' : 'cine_estandar';
+  const formatoDetectado = usaPrefijoEnLinea ? "teatro_hispano" : "cine_estandar";
 
   xValues.sort((a, b) => a - b);
   const minX = xValues[0] ?? 50;
@@ -648,31 +758,31 @@ export function calibrateSpatiallyByHeuristics(lines: RawPdfLine[]): ScriptRules
   // Registrar personajes del reparto explícito
   for (const c of explicitCast) {
     aliasPersonajes[c] = c;
-    if (c === 'ABUELA') aliasPersonajes['ABUELITA'] = 'ABUELA';
-    if (c === 'MADRE') aliasPersonajes['MAMÁ'] = 'MADRE';
-    if (c === 'PADRE') aliasPersonajes['PAPÁ'] = 'PADRE';
-    if (c === 'PETER PAN') aliasPersonajes['PETER'] = 'PETER PAN';
-    if (c === 'DON JUAN' || c === 'DON JUAN TENORIO') {
-      aliasPersonajes['DON JUAN TENORIO'] = 'DON JUAN';
-      aliasPersonajes['DON JUAN'] = 'DON JUAN';
+    if (c === "ABUELA") aliasPersonajes["ABUELITA"] = "ABUELA";
+    if (c === "MADRE") aliasPersonajes["MAMÁ"] = "MADRE";
+    if (c === "PADRE") aliasPersonajes["PAPÁ"] = "PADRE";
+    if (c === "PETER PAN") aliasPersonajes["PETER"] = "PETER PAN";
+    if (c === "DON JUAN" || c === "DON JUAN TENORIO") {
+      aliasPersonajes["DON JUAN TENORIO"] = "DON JUAN";
+      aliasPersonajes["DON JUAN"] = "DON JUAN";
     }
-    if (c === 'DON LUIS' || c === 'DON LUIS MEJÍA') {
-      aliasPersonajes['DON LUIS MEJÍA'] = 'DON LUIS';
-      aliasPersonajes['DON LUIS'] = 'DON LUIS';
+    if (c === "DON LUIS" || c === "DON LUIS MEJÍA") {
+      aliasPersonajes["DON LUIS MEJÍA"] = "DON LUIS";
+      aliasPersonajes["DON LUIS"] = "DON LUIS";
     }
-    if (c === 'CIUTTI' || c === 'MARCOS CIUTTI') {
-      aliasPersonajes['MARCOS CIUTTI'] = 'CIUTTI';
-      aliasPersonajes['CIUTTI'] = 'CIUTTI';
+    if (c === "CIUTTI" || c === "MARCOS CIUTTI") {
+      aliasPersonajes["MARCOS CIUTTI"] = "CIUTTI";
+      aliasPersonajes["CIUTTI"] = "CIUTTI";
     }
-    if (c === 'DOÑA INÉS' || c === 'DOÑA INÉS DE ULLOA' || c === 'INÉS') {
-      aliasPersonajes['DOÑA INÉS DE ULLOA'] = 'DOÑA INÉS';
-      aliasPersonajes['INÉS'] = 'DOÑA INÉS';
-      aliasPersonajes['DOÑA INÉS'] = 'DOÑA INÉS';
+    if (c === "DOÑA INÉS" || c === "DOÑA INÉS DE ULLOA" || c === "INÉS") {
+      aliasPersonajes["DOÑA INÉS DE ULLOA"] = "DOÑA INÉS";
+      aliasPersonajes["INÉS"] = "DOÑA INÉS";
+      aliasPersonajes["DOÑA INÉS"] = "DOÑA INÉS";
     }
-    if (c === 'COMENDADOR' || c === 'DON GONZALO DE ULLOA') {
-      aliasPersonajes['DON GONZALO DE ULLOA'] = 'COMENDADOR';
-      aliasPersonajes['DON GONZALO'] = 'COMENDADOR';
-      aliasPersonajes['COMENDADOR'] = 'COMENDADOR';
+    if (c === "COMENDADOR" || c === "DON GONZALO DE ULLOA") {
+      aliasPersonajes["DON GONZALO DE ULLOA"] = "COMENDADOR";
+      aliasPersonajes["DON GONZALO"] = "COMENDADOR";
+      aliasPersonajes["COMENDADOR"] = "COMENDADOR";
     }
     aliasPersonajes[`EL ${c}`] = c;
     aliasPersonajes[`LA ${c}`] = c;
@@ -703,7 +813,7 @@ const ACT_HEADING_RE =
 
 export function parseGeometricScript(
   lines: RawPdfLine[],
-  rules: ScriptRules
+  rules: ScriptRules,
 ): GeometricScriptResult {
   const scenes: ParsedGeometricScene[] = [];
   let currentActTitle: string | undefined = undefined;
@@ -713,21 +823,24 @@ export function parseGeometricScript(
   const knownCharacters = new Set<string>(explicitCast);
 
   // Título inicial por defecto (si la primera línea es un título de obra, se usará)
-  const initialTitle = lines.length > 0 && lines[0].text.length <= 40 && !STAGE_BLACKLIST.has(lines[0].text.toUpperCase())
-    ? lines[0].text.replace(/\.$/, '').trim()
-    : 'Escena 1 (Inicio)';
+  const initialTitle =
+    lines.length > 0 &&
+    lines[0].text.length <= 40 &&
+    !STAGE_BLACKLIST.has(lines[0].text.toUpperCase())
+      ? lines[0].text.replace(/\.$/, "").trim()
+      : "Escena 1 (Inicio)";
 
   let currentScene: ParsedGeometricScene = {
     id: `scene-1`,
     title: initialTitle,
     lines: [],
     characters: [],
-    description: '',
+    description: "",
   };
 
   let currentCharacter: string | null = null;
   let inParenthetical = false;
-  let currentParenthetical = '';
+  let currentParenthetical = "";
   let inSceneNote = false;
   let inCastSection = false;
   let lineCounter = 0;
@@ -736,10 +849,8 @@ export function parseGeometricScript(
     if (currentScene.lines.length > 0) {
       currentScene.characters = Array.from(
         new Set(
-          currentScene.lines
-            .map((l) => l.characterName)
-            .filter((c): c is string => Boolean(c))
-        )
+          currentScene.lines.map((l) => l.characterName).filter((c): c is string => Boolean(c)),
+        ),
       );
       scenes.push(currentScene);
     }
@@ -760,19 +871,27 @@ export function parseGeometricScript(
 
     // B. Detectar Título de Nueva Obra o Pieza (seguido de "Personajes:" o "Guión" en las próximas 1-3 líneas)
     if (i + 2 < lines.length) {
-      const next1 = lines[i + 1]?.text.trim() || '';
-      const next2 = lines[i + 2]?.text.trim() || '';
-      const isNextCast = /^(?:PERSONAJES|REPARTO)(?:\s*\([^)]+\))?[:\s]*$/i.test(next1) || /^(?:PERSONAJES|REPARTO)(?:\s*\([^)]+\))?[:\s]*$/i.test(next2);
-      if (isNextCast && text.length <= 40 && !STAGE_BLACKLIST.has(text.toUpperCase()) && !text.startsWith('●') && !text.startsWith('-')) {
+      const next1 = lines[i + 1]?.text.trim() || "";
+      const next2 = lines[i + 2]?.text.trim() || "";
+      const isNextCast =
+        /^(?:PERSONAJES|REPARTO)(?:\s*\([^)]+\))?[:\s]*$/i.test(next1) ||
+        /^(?:PERSONAJES|REPARTO)(?:\s*\([^)]+\))?[:\s]*$/i.test(next2);
+      if (
+        isNextCast &&
+        text.length <= 40 &&
+        !STAGE_BLACKLIST.has(text.toUpperCase()) &&
+        !text.startsWith("●") &&
+        !text.startsWith("-")
+      ) {
         commitSceneIfHasLines();
-        const pieceTitle = text.replace(/\.$/, '').trim();
+        const pieceTitle = text.replace(/\.$/, "").trim();
         currentScene = {
           id: `scene-${scenes.length + 1}`,
           title: pieceTitle,
           actTitle: pieceTitle,
           lines: [],
           characters: [],
-          description: '',
+          description: "",
         };
         currentCharacter = null;
         inSceneNote = false;
@@ -782,19 +901,19 @@ export function parseGeometricScript(
     }
 
     // C. Sección de Reparto Explícito (Personajes: ...)
-    if (/^(?:PERSONAJES|REPARTO|DRAMATIS PERSONAE|ELENCO|ACTORES)(?:\s*\([^)]+\))?[:\s]*$/i.test(text)) {
+    if (
+      /^(?:PERSONAJES|REPARTO|DRAMATIS PERSONAE|ELENCO|ACTORES)(?:\s*\([^)]+\))?[:\s]*$/i.test(text)
+    ) {
       inCastSection = true;
       continue;
     }
 
     if (inCastSection) {
       const isCue = /^[A-ZÁÉÍÓÚÑÜ0-9\s]{2,25}:\s*\S/.test(text);
-      const isStage = STAGE_ACTION_START_RE.test(text) || text.startsWith('(');
+      const isStage = STAGE_ACTION_START_RE.test(text) || text.startsWith("(");
       const isDivider = DIVIDER_RE.test(text);
       const isHeading =
-        LOCATION_HEADING_RE.test(text) ||
-        SCENE_HEADING_RE.test(text) ||
-        ACT_HEADING_RE.test(text);
+        LOCATION_HEADING_RE.test(text) || SCENE_HEADING_RE.test(text) || ACT_HEADING_RE.test(text);
 
       if (isCue || isStage || isDivider || isHeading) {
         inCastSection = false;
@@ -811,13 +930,16 @@ export function parseGeometricScript(
     if (/^(?:GUIÓN|GUION)[:\s]*$/i.test(text)) {
       continue;
     }
-    if (/^[\u2022\u25cf\u25cb\u25a0\u25aa\u2043\u2219\u00b7\-\*\+]/.test(text) && !text.includes(':')) {
+    if (
+      /^[\u2022\u25cf\u25cb\u25a0\u25aa\u2043\u2219\u00b7\-\*\+]/.test(text) &&
+      !text.includes(":")
+    ) {
       continue;
     }
 
     // D. Detección de Acto
     if (ACT_HEADING_RE.test(text)) {
-      currentActTitle = text.replace(/[:\.\-—]+$/, '').trim();
+      currentActTitle = text.replace(/[:\.\-—]+$/, "").trim();
       commitSceneIfHasLines();
       currentScene = {
         id: `scene-${scenes.length + 1}`,
@@ -825,7 +947,7 @@ export function parseGeometricScript(
         actTitle: currentActTitle,
         lines: [],
         characters: [],
-        description: '',
+        description: "",
       };
       currentCharacter = null;
       inSceneNote = false;
@@ -836,8 +958,8 @@ export function parseGeometricScript(
     if (SCENE_HEADING_RE.test(text)) {
       commitSceneIfHasLines();
       const title = currentActTitle
-        ? `${currentActTitle} - ${text.replace(/[:\.\-—]+$/, '').trim()}`
-        : text.replace(/[:\.\-—]+$/, '').trim();
+        ? `${currentActTitle} - ${text.replace(/[:\.\-—]+$/, "").trim()}`
+        : text.replace(/[:\.\-—]+$/, "").trim();
 
       currentScene = {
         id: `scene-${scenes.length + 1}`,
@@ -845,7 +967,7 @@ export function parseGeometricScript(
         actTitle: currentActTitle,
         lines: [],
         characters: [],
-        description: '',
+        description: "",
       };
       currentCharacter = null;
       inSceneNote = false;
@@ -860,7 +982,7 @@ export function parseGeometricScript(
         title: `Escena ${scenes.length + 1}`,
         lines: [],
         characters: [],
-        description: '',
+        description: "",
       };
       currentCharacter = null;
       inSceneNote = false;
@@ -873,13 +995,13 @@ export function parseGeometricScript(
         commitSceneIfHasLines();
         currentScene = {
           id: `scene-${scenes.length + 1}`,
-          title: text.replace(/\.$/, '').trim(),
+          title: text.replace(/\.$/, "").trim(),
           lines: [],
           characters: [],
-          description: '',
+          description: "",
         };
       } else {
-        currentScene.title = `${currentScene.title} - ${text.replace(/\.$/, '').trim()}`;
+        currentScene.title = `${currentScene.title} - ${text.replace(/\.$/, "").trim()}`;
       }
       currentCharacter = null;
       inSceneNote = false;
@@ -895,7 +1017,7 @@ export function parseGeometricScript(
         : text;
       currentScene.lines.push({
         id: `line-${++lineCounter}`,
-        type: 'acotacion',
+        type: "acotacion",
         text,
         page: rawLine.page,
         x: rawLine.x,
@@ -909,15 +1031,25 @@ export function parseGeometricScript(
       const candidateInline = text.match(inlineRegex);
       const isRealInlineChar =
         candidateInline &&
-        !STAGE_BLACKLIST.has(candidateInline[1].replace(/[:\.\-—–]+$/, '').trim().toUpperCase());
+        !STAGE_BLACKLIST.has(
+          candidateInline[1]
+            .replace(/[:\.\-—–]+$/, "")
+            .trim()
+            .toUpperCase(),
+        );
 
       const isStandaloneUpper =
         text === text.toUpperCase() && text.length <= 35 && !/^\d+$/.test(text);
       const isRealUpperChar =
         isStandaloneUpper &&
-        !STAGE_BLACKLIST.has(text.replace(/[:\.\-—–]+$/, '').replace(/\([^)]+\)/g, '').trim());
+        !STAGE_BLACKLIST.has(
+          text
+            .replace(/[:\.\-—–]+$/, "")
+            .replace(/\([^)]+\)/g, "")
+            .trim(),
+        );
 
-      if (isRealInlineChar || isRealUpperChar || text.startsWith('(')) {
+      if (isRealInlineChar || isRealUpperChar || text.startsWith("(")) {
         inSceneNote = false;
         // Sale de la nota y continúa al procesamiento del diálogo o acotación abajo
       } else {
@@ -927,7 +1059,7 @@ export function parseGeometricScript(
           : text;
         currentScene.lines.push({
           id: `line-${++lineCounter}`,
-          type: 'acotacion',
+          type: "acotacion",
           text,
           page: rawLine.page,
           x: rawLine.x,
@@ -942,7 +1074,7 @@ export function parseGeometricScript(
       currentCharacter = null;
       currentScene.lines.push({
         id: `line-${++lineCounter}`,
-        type: 'acotacion',
+        type: "acotacion",
         text,
         page: rawLine.page,
         x: rawLine.x,
@@ -954,12 +1086,15 @@ export function parseGeometricScript(
     // J. Caso Prefijo en Línea (ej. "Narrador: Es de noche...", "Peter: Entraremos...", "JUAN.- ¡Hola!")
     const inlineMatch = text.match(inlineRegex);
     if (inlineMatch) {
-      const rawCandidate = inlineMatch[1].replace(/[:\.\-—–]+$/, '').trim().toUpperCase();
+      const rawCandidate = inlineMatch[1]
+        .replace(/[:\.\-—–]+$/, "")
+        .trim()
+        .toUpperCase();
       if (!STAGE_BLACKLIST.has(rawCandidate) && rawCandidate.length >= 2) {
         const { rectifiedName } = rectifyCharacterCandidate(
           rawCandidate,
           explicitCast,
-          knownCharacters
+          knownCharacters,
         );
         const canonicalName = rules.aliasPersonajes[rectifiedName] || rectifiedName;
         knownCharacters.add(canonicalName);
@@ -969,7 +1104,7 @@ export function parseGeometricScript(
 
         currentScene.lines.push({
           id: `line-${++lineCounter}`,
-          type: 'dialogo',
+          type: "dialogo",
           characterName: canonicalName,
           parenthetical,
           text: dialogueText,
@@ -979,7 +1114,7 @@ export function parseGeometricScript(
         });
         currentCharacter = canonicalName;
         inParenthetical = false;
-        currentParenthetical = '';
+        currentParenthetical = "";
         continue;
       }
     }
@@ -993,8 +1128,8 @@ export function parseGeometricScript(
 
     if (isStandaloneName) {
       const rawCandidate = text
-        .replace(/[:\.\-—–]+$/, '')
-        .replace(/\([^)]+\)/g, '')
+        .replace(/[:\.\-—–]+$/, "")
+        .replace(/\([^)]+\)/g, "")
         .trim()
         .toUpperCase();
 
@@ -1002,41 +1137,41 @@ export function parseGeometricScript(
         const { rectifiedName } = rectifyCharacterCandidate(
           rawCandidate,
           explicitCast,
-          knownCharacters
+          knownCharacters,
         );
         const canonical = rules.aliasPersonajes[rectifiedName] || rectifiedName;
         knownCharacters.add(canonical);
         currentCharacter = canonical;
         inParenthetical = false;
-        currentParenthetical = '';
+        currentParenthetical = "";
         continue;
       }
     }
 
     // I. Acotación entre paréntesis (monolínea o multilínea)
     if (inParenthetical) {
-      currentParenthetical += (currentParenthetical.endsWith('-') ? '' : ' ') + text;
-      if (text.includes(')')) {
+      currentParenthetical += (currentParenthetical.endsWith("-") ? "" : " ") + text;
+      if (text.includes(")")) {
         inParenthetical = false;
         currentScene.lines.push({
           id: `line-${++lineCounter}`,
-          type: 'acotacion',
+          type: "acotacion",
           characterName: currentCharacter ?? undefined,
-          text: currentParenthetical.replace(/^\(|\)$/g, '').trim(),
+          text: currentParenthetical.replace(/^\(|\)$/g, "").trim(),
           page: rawLine.page,
           x: rawLine.x,
           y: rawLine.y,
         });
-        currentParenthetical = '';
+        currentParenthetical = "";
       }
       continue;
     }
 
-    if (text.startsWith('(')) {
-      if (text.endsWith(')')) {
+    if (text.startsWith("(")) {
+      if (text.endsWith(")")) {
         currentScene.lines.push({
           id: `line-${++lineCounter}`,
-          type: 'acotacion',
+          type: "acotacion",
           characterName: currentCharacter ?? undefined,
           text: text.slice(1, -1).trim(),
           page: rawLine.page,
@@ -1053,13 +1188,13 @@ export function parseGeometricScript(
     // J. Diálogo perteneciente al personaje activo (unir de corrido parlamentos continuos)
     if (currentCharacter) {
       const lastLine = currentScene.lines[currentScene.lines.length - 1];
-      if (lastLine && lastLine.type === 'dialogo' && lastLine.characterName === currentCharacter) {
-        const sep = lastLine.text.endsWith('-') ? '' : ' ';
+      if (lastLine && lastLine.type === "dialogo" && lastLine.characterName === currentCharacter) {
+        const sep = lastLine.text.endsWith("-") ? "" : " ";
         lastLine.text = `${lastLine.text.trim()}${sep}${text}`;
       } else {
         currentScene.lines.push({
           id: `line-${++lineCounter}`,
-          type: 'dialogo',
+          type: "dialogo",
           characterName: currentCharacter,
           text,
           page: rawLine.page,
@@ -1076,51 +1211,51 @@ export function parseGeometricScript(
   if (scenes.length === 0) {
     const fallbackLines: ParsedGeometricLine[] = lines.map((l, i) => ({
       id: `line-${i + 1}`,
-      type: 'dialogo',
+      type: "dialogo",
       text: l.text,
       page: l.page,
       x: l.x,
       y: l.y,
     }));
     scenes.push({
-      id: 'scene-1',
-      title: 'Escena completa',
+      id: "scene-1",
+      title: "Escena completa",
       lines: fallbackLines,
       characters: Array.from(knownCharacters).slice(0, 6),
     });
   }
 
   // Filtrar y unificar personajes canónicos en la lista global
-  const cleanCharacters = Array.from(
-    new Set(scenes.flatMap((s) => s.characters))
-  ).map((name) => {
-    if (name === 'ABUELITA') return 'ABUELA';
-    if (name === 'MAMÁ' || name === 'MAMA') return 'MADRE';
-    if (name === 'PAPÁ' || name === 'PAPA') return 'PADRE';
-    if (name === 'PETER') return 'PETER PAN';
-    return name;
-  }).filter((name) => {
-    if (STAGE_BLACKLIST.has(name)) return false;
+  const cleanCharacters = Array.from(new Set(scenes.flatMap((s) => s.characters)))
+    .map((name) => {
+      if (name === "ABUELITA") return "ABUELA";
+      if (name === "MAMÁ" || name === "MAMA") return "MADRE";
+      if (name === "PAPÁ" || name === "PAPA") return "PADRE";
+      if (name === "PETER") return "PETER PAN";
+      return name;
+    })
+    .filter((name) => {
+      if (STAGE_BLACKLIST.has(name)) return false;
 
-    // Descartar quimeras compuestas como "JOVEN 1 Y JOVEN 2" o "GENARO Y LUPERCIO"
-    if (name.includes(' Y ')) {
-      const parts = name.split(/\s+Y\s+/);
-      if (parts.every((p) => knownCharacters.has(p) || explicitCast.has(p))) {
-        return false;
+      // Descartar quimeras compuestas como "JOVEN 1 Y JOVEN 2" o "GENARO Y LUPERCIO"
+      if (name.includes(" Y ")) {
+        const parts = name.split(/\s+Y\s+/);
+        if (parts.every((p) => knownCharacters.has(p) || explicitCast.has(p))) {
+          return false;
+        }
       }
-    }
 
-    // Descartar quimeras residuales que unan dos personajes ya conocidos
-    const words = name.split(/\s+/);
-    if (words.length >= 2) {
-      const w1 = words[0];
-      const w2 = words.slice(1).join(' ');
-      if (knownCharacters.has(w1) && (knownCharacters.has(w2) || explicitCast.has(w2))) {
-        return false;
+      // Descartar quimeras residuales que unan dos personajes ya conocidos
+      const words = name.split(/\s+/);
+      if (words.length >= 2) {
+        const w1 = words[0];
+        const w2 = words.slice(1).join(" ");
+        if (knownCharacters.has(w1) && (knownCharacters.has(w2) || explicitCast.has(w2))) {
+          return false;
+        }
       }
-    }
-    return true;
-  });
+      return true;
+    });
 
   const totalLines = scenes.reduce((acc, s) => acc + s.lines.length, 0);
 

@@ -40,5 +40,7 @@ bun.lockb
 
 # Python / TinyLLM
 src/teleprompter/venv/
+src/teleprompter/**/*.db
+src/teleprompter/*.db
 **/__pycache__/
 *.pyc

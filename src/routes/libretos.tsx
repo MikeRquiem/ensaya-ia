@@ -4,7 +4,6 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
   Search,
-  ChevronDown,
   Star,
   MoreVertical,
   LayoutGrid,
@@ -28,7 +27,13 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { ScriptPipelineProgress } from "@/components/ScriptPipelineProgress";
 import { readScriptFile } from "@/lib/pdf-script";
+import {
+  executeScriptPipeline,
+  type PipelineProgress,
+  type PipelineResult,
+} from "@/lib/ai/script-pipeline";
 import {
   deleteScriptPermanently,
   duplicateScript,
@@ -39,15 +44,59 @@ import {
   getScripts,
   importScriptFromText,
   restoreScript,
+  saveLocalScriptSetup,
   setActiveScript,
   softDeleteScript,
   toggleScriptFavorite,
   updateScript,
   updateScriptDialogue,
   createBlankScript,
+  type ScriptImportDraft,
   type ScriptRecord,
+  type ScriptSetup,
 } from "@/lib/rehearsal-data";
 import { dialogueFromSetup } from "@/lib/local-library";
+
+const PIPELINE_TIMEOUT_MS = 8000;
+
+function formatDialogueFromSetup(setup: ScriptSetup): string {
+  const byScene = new Map<string, typeof setup.lines>();
+  for (const line of setup.lines) {
+    const list = byScene.get(line.scene_id) ?? [];
+    list.push(line);
+    byScene.set(line.scene_id, list);
+  }
+  const blocks: string[] = [];
+  for (const scene of setup.scenes) {
+    blocks.push(scene.title);
+    const lines = byScene.get(scene.id) ?? [];
+    for (const line of lines) {
+      const name = line.character?.name?.trim();
+      blocks.push(name ? `${name}: ${line.text}` : line.text);
+    }
+    blocks.push("");
+  }
+  return blocks.join("\n").trim();
+}
+
+function applyCharacterRenames(setup: ScriptSetup, names: string[]): ScriptSetup {
+  const characters = setup.characters.map((character, index) => {
+    const nextName = names[index]?.trim();
+    return nextName && nextName !== character.name ? { ...character, name: nextName } : character;
+  });
+  const byId = new Map(characters.map((character) => [character.id, character]));
+  const lines = setup.lines.map((line) => ({
+    ...line,
+    character: line.character_id ? (byId.get(line.character_id) ?? line.character) : null,
+  }));
+  return { ...setup, characters, lines };
+}
+
+function sourceLabel(result: PipelineResult): string {
+  if (result.stats.source === "ollama") return "Ollama";
+  if (result.stats.source === "fastapi") return "modelo local (FastAPI)";
+  return "heurística del navegador";
+}
 
 export const Route = createFileRoute("/libretos")({
   component: Libretos,
@@ -85,6 +134,17 @@ function Libretos() {
     description: "",
     dialogue: "",
   });
+  const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
+  const [pipelineBusy, setPipelineBusy] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewResult, setReviewResult] = useState<PipelineResult | null>(null);
+  const [reviewNames, setReviewNames] = useState<string[]>([]);
+  const [reviewDialogue, setReviewDialogue] = useState("");
+  const [reviewTitle, setReviewTitle] = useState("");
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteTitle, setPasteTitle] = useState("");
+  const [pasteText, setPasteText] = useState("");
+  const [confirmingImport, setConfirmingImport] = useState(false);
 
   const { data: currentUserId } = useQuery({
     queryKey: ["current-user-id"],
@@ -186,7 +246,11 @@ function Libretos() {
       refreshScripts();
       setSelectedId(script.id);
       setActiveTab("Mis libretos");
-      toast.success("Libreto importado en este dispositivo");
+      toast.success(
+        script.description?.includes("detectados")
+          ? `Libreto importado. ${script.description}`
+          : "Libreto importado en este dispositivo",
+      );
     },
     onError: (error) =>
       toast.error(error instanceof Error ? error.message : "No se pudo importar el libreto"),
@@ -296,6 +360,73 @@ function Libretos() {
       toast.error(error instanceof Error ? error.message : "No se pudo eliminar definitivamente"),
   });
 
+  function fallbackImport(draft: ScriptImportDraft, reason: string) {
+    toast.message(reason);
+    importMutation.mutate(draft);
+  }
+
+  async function runImportPipeline(draft: ScriptImportDraft) {
+    if (!currentUserId) {
+      toast.error("Inicia sesión para importar libretos.");
+      return;
+    }
+
+    setPipelineBusy(true);
+    setPipelineProgress({
+      step: 1,
+      totalSteps: 5,
+      message: "Preparando detección de personajes...",
+      stage: "sanitize",
+    });
+    setReviewOpen(false);
+    setReviewResult(null);
+
+    try {
+      const result = await Promise.race([
+        executeScriptPipeline(draft, currentUserId, setPipelineProgress),
+        new Promise<never>((_, reject) => {
+          window.setTimeout(() => reject(new Error("PIPELINE_TIMEOUT")), PIPELINE_TIMEOUT_MS);
+        }),
+      ]);
+
+      if (!result.setup.characters.length && !result.setup.lines.length) {
+        setPipelineBusy(false);
+        setPipelineProgress(null);
+        fallbackImport(
+          draft,
+          "No se detectaron personajes con el pipeline; se usa el importador habitual.",
+        );
+        return;
+      }
+
+      setReviewResult(result);
+      setReviewTitle(result.setup.script?.title || draft.title);
+      setReviewNames(result.setup.characters.map((character) => character.name));
+      setReviewDialogue(formatDialogueFromSetup(result.setup));
+      setPipelineBusy(false);
+      setPipelineProgress({
+        step: 5,
+        totalSteps: 5,
+        message: `Listo con ${sourceLabel(result)}. Revisa antes de guardar.`,
+        stage: "done",
+      });
+      window.setTimeout(() => {
+        setPipelineProgress(null);
+        setReviewOpen(true);
+      }, 400);
+    } catch (error) {
+      setPipelineBusy(false);
+      setPipelineProgress(null);
+      const timedOut = error instanceof Error && error.message === "PIPELINE_TIMEOUT";
+      fallbackImport(
+        draft,
+        timedOut
+          ? "La detección tardó demasiado; se importó con el flujo habitual."
+          : "No se pudo completar la detección automática; se usa el importador habitual.",
+      );
+    }
+  }
+
   async function handleImportFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -312,7 +443,7 @@ function Libretos() {
       .replace(/[-_]+/g, " ")
       .trim();
 
-    importMutation.mutate({
+    await runImportPipeline({
       title: title || "Libreto importado",
       rawText,
       genre: "Importado",
@@ -326,6 +457,85 @@ function Libretos() {
       return;
     }
     fileInputRef.current?.click();
+  }
+
+  function openPasteImporter() {
+    if (!currentUserId) {
+      toast.error("Inicia sesión para importar libretos.");
+      return;
+    }
+    setPasteTitle("");
+    setPasteText("");
+    setPasteOpen(true);
+  }
+
+  async function confirmPasteImport() {
+    const rawText = pasteText.trim();
+    if (!rawText) {
+      toast.error("Pega el texto del libreto.");
+      return;
+    }
+    setPasteOpen(false);
+    await runImportPipeline({
+      title: pasteTitle.trim() || "Libreto pegado",
+      rawText,
+      genre: "Importado",
+      description: "Importado desde texto pegado",
+    });
+  }
+
+  async function confirmPipelineReview() {
+    if (!reviewResult || !currentUserId) return;
+    setConfirmingImport(true);
+    try {
+      const method = sourceLabel(reviewResult);
+      const renamedSetup = applyCharacterRenames(reviewResult.setup, reviewNames);
+      const setup: ScriptSetup = {
+        ...renamedSetup,
+        script: renamedSetup.script
+          ? {
+              ...renamedSetup.script,
+              title: reviewTitle.trim() || renamedSetup.script.title,
+              description: [renamedSetup.script.description, `Detección: ${method}.`]
+                .filter(Boolean)
+                .join(" "),
+              updated_at: new Date().toISOString(),
+            }
+          : null,
+      };
+
+      const originalDialogue = formatDialogueFromSetup(renamedSetup);
+      if (reviewDialogue.trim() !== originalDialogue.trim()) {
+        const script = await importScriptFromText({
+          title: reviewTitle.trim() || setup.script?.title || "Libreto importado",
+          author: setup.script?.author,
+          genre: setup.script?.genre ?? "Importado",
+          description: setup.script?.description,
+          rawText: reviewDialogue,
+        });
+        refreshScripts();
+        setSelectedId(script.id);
+        setActiveTab("Mis libretos");
+        setReviewOpen(false);
+        setReviewResult(null);
+        toast.success(`Libreto guardado (${method}). Revisa personajes si hace falta.`);
+        return;
+      }
+
+      const script = saveLocalScriptSetup(setup);
+      refreshScripts();
+      setSelectedId(script.id);
+      setActiveTab("Mis libretos");
+      setReviewOpen(false);
+      setReviewResult(null);
+      toast.success(
+        `Libreto guardado con ${setup.characters.length} personaje${setup.characters.length === 1 ? "" : "s"} (${method}).`,
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo guardar el libreto");
+    } finally {
+      setConfirmingImport(false);
+    }
   }
 
   function requireOwnedAction(action: () => void) {
@@ -352,7 +562,8 @@ function Libretos() {
         <div>
           <h1 className="font-display text-4xl">Gestión de libretos</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Crea un libreto, importa (.txt, .md o PDF) y edita las líneas de diálogo.
+            Crea un libreto o importa .txt, .md o PDF. Se detectan personajes y escenas; si el texto
+            viene corrido, un modelo de lenguaje intenta separarlos.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -375,18 +586,151 @@ function Libretos() {
             {createMutation.isPending ? "Creando..." : "Nuevo libreto"}
           </button>
           <button
+            type="button"
+            onClick={openPasteImporter}
+            disabled={importMutation.isPending || pipelineBusy || confirmingImport}
+            className="inline-flex items-center gap-2 border border-border/70 text-foreground bg-surface rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-60"
+          >
+            Pegar texto
+          </button>
+          <button
+            type="button"
             onClick={openImporter}
-            disabled={importMutation.isPending}
+            disabled={importMutation.isPending || pipelineBusy || confirmingImport}
             className="inline-flex items-center gap-2 bg-primary-gradient text-primary-foreground rounded-lg px-4 py-2 text-sm font-medium shadow-glow disabled:opacity-60"
           >
             <Upload className="w-4 h-4" />
-            {importMutation.isPending ? "Importando..." : "Importar libreto"}
-            <span className="border-l border-primary-foreground/30 pl-2 ml-1">
-              <ChevronDown className="w-3.5 h-3.5" />
-            </span>
+            {importMutation.isPending || pipelineBusy ? "Importando..." : "Importar libreto"}
           </button>
         </div>
       </div>
+
+      <ScriptPipelineProgress
+        progress={pipelineBusy || pipelineProgress ? pipelineProgress : null}
+        result={pipelineProgress?.stage === "done" && reviewResult ? reviewResult : null}
+        onClose={() => {
+          setPipelineProgress(null);
+          if (reviewResult) setReviewOpen(true);
+        }}
+      />
+
+      {pasteOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg bg-surface border border-border/80 rounded-2xl shadow-2xl p-5 space-y-3">
+            <h3 className="font-semibold text-base">Pegar libreto</h3>
+            <p className="text-xs text-muted-foreground">
+              Pega el texto completo. Se detectarán personajes antes de guardar.
+            </p>
+            <input
+              value={pasteTitle}
+              onChange={(event) => setPasteTitle(event.target.value)}
+              placeholder="Título (opcional)"
+              className="w-full bg-background border border-border/60 rounded-lg px-3 py-2 text-sm"
+            />
+            <textarea
+              value={pasteText}
+              onChange={(event) => setPasteText(event.target.value)}
+              placeholder={"PERSONAJE:\nDiálogo..."}
+              rows={12}
+              className="w-full bg-background border border-border/60 rounded-lg px-3 py-2 text-sm font-mono"
+            />
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setPasteOpen(false)}
+                className="px-3 py-2 text-sm border border-border rounded-lg"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmPasteImport()}
+                className="px-3 py-2 text-sm bg-primary-gradient text-primary-foreground rounded-lg"
+              >
+                Detectar personajes
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {reviewOpen && reviewResult ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-surface border border-border/80 rounded-2xl shadow-2xl p-5 space-y-4">
+            <div>
+              <h3 className="font-semibold text-base">Revisar importación</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Corrige nombres o diálogo antes de guardar. Método:{" "}
+                <span className="text-foreground font-medium">{sourceLabel(reviewResult)}</span>
+                {reviewResult.stats.usedTinyLLM ? " · TinyLLM" : ""}.
+              </p>
+            </div>
+            <input
+              value={reviewTitle}
+              onChange={(event) => setReviewTitle(event.target.value)}
+              className="w-full bg-background border border-border/60 rounded-lg px-3 py-2 text-sm"
+              placeholder="Título del libreto"
+            />
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">Personajes detectados</p>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {reviewNames.map((name, index) => (
+                  <input
+                    key={`review-char-${index}`}
+                    value={name}
+                    onChange={(event) => {
+                      const next = [...reviewNames];
+                      next[index] = event.target.value;
+                      setReviewNames(next);
+                    }}
+                    className="bg-background border border-border/60 rounded-lg px-3 py-2 text-sm"
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">Diálogo</p>
+              <textarea
+                value={reviewDialogue}
+                onChange={(event) => setReviewDialogue(event.target.value)}
+                rows={14}
+                className="w-full bg-background border border-border/60 rounded-lg px-3 py-2 text-sm font-mono"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setReviewOpen(false);
+                  setReviewResult(null);
+                  fallbackImport(
+                    {
+                      title: reviewTitle || "Libreto importado",
+                      rawText: reviewDialogue || reviewResult.setup.script?.raw_text || "",
+                      genre: "Importado",
+                      description: "Importado sin revisión del pipeline",
+                    },
+                    "Se guardó con el importador habitual.",
+                  );
+                }}
+                className="px-3 py-2 text-sm border border-border rounded-lg"
+                disabled={confirmingImport}
+              >
+                Usar importador habitual
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmPipelineReview()}
+                disabled={confirmingImport}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-primary-gradient text-primary-foreground rounded-lg disabled:opacity-60"
+              >
+                <Save className="w-4 h-4" />
+                {confirmingImport ? "Guardando..." : "Confirmar y guardar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid lg:grid-cols-[1fr_340px] gap-6">
         <div>

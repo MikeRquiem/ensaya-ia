@@ -24,3 +24,26 @@ export type RehearsalAiProvider = {
   id: AiProviderId;
   generateFeedback: (input: RehearsalFeedbackInput) => Promise<string>;
 };
+
+export type ScriptSegmentInput = {
+  rawText: string;
+  title?: string;
+};
+
+export type SegmentedScriptLine = {
+  characterName: string | null;
+  text: string;
+};
+
+export type SegmentedScriptScene = {
+  title: string;
+  location: string | null;
+  lines: SegmentedScriptLine[];
+};
+
+export type ScriptSegmentResult = {
+  title: string | null;
+  characters: string[];
+  scenes: SegmentedScriptScene[];
+  source: Exclude<AiProviderId, "template">;
+};

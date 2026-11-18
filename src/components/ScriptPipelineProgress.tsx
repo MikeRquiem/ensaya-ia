@@ -122,14 +122,18 @@ export function ScriptPipelineProgress({
               </span>
               <div className="flex items-center gap-1.5">
                 <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium text-[10px]">
-                  {result.stats.formatDetected === 'teatro_hispano'
-                    ? 'Teatro Hispano (Prefijo)'
-                    : result.stats.formatDetected === 'cine_estandar'
-                      ? 'Cine Estándar (Sangría)'
-                      : 'Formato Mixto'}
+                  {result.stats.formatDetected === "teatro_hispano"
+                    ? "Teatro Hispano (Prefijo)"
+                    : result.stats.formatDetected === "cine_estandar"
+                      ? "Cine Estándar (Sangría)"
+                      : "Formato Mixto"}
                 </span>
                 <span className="px-1.5 py-0.5 rounded bg-accent/30 text-accent-foreground font-medium text-[10px]">
-                  {result.stats.usedTinyLLM ? "TinyLLM Qwen2.5" : "Parser Espacial"}
+                  {result.stats.source === "ollama"
+                    ? "Ollama"
+                    : result.stats.source === "fastapi"
+                      ? "Modelo local (FastAPI)"
+                      : "Heurística del navegador"}
                 </span>
               </div>
             </div>

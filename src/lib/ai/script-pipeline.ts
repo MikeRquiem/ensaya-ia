@@ -1,7 +1,7 @@
 /**
  * script-pipeline.ts
  * Pipeline de Ingestión Teatral: Parser Espacial + Calibración TinyLLM + Reparto Inteligente
- * 
+ *
  * Etapas del pipeline:
  * 1. Sanitización y conversión a líneas geométricas (X, Y).
  * 2. Calibración del formato mediante TinyLLM (Structured Output Zod) o Heurística Espacial.
@@ -15,14 +15,14 @@ import {
   calibrateScriptWithTinyLLM,
   parseGeometricScript,
   type ScriptRules,
-} from './script-parser';
+} from "./script-parser";
 import {
   computeConflictMatrixInMemory,
   assignCharactersToHumans,
   type CharacterStats,
   type CastAssignmentResult,
-} from './actor-assignment';
-import { checkTinyLLMHardware, type HardwareStatus } from './tiny-character-detector';
+} from "./actor-assignment";
+import { checkTinyLLMHardware, type HardwareStatus } from "./tiny-character-detector";
 import type {
   CharacterRecord,
   SceneRecord,
@@ -30,13 +30,13 @@ import type {
   ScriptLineWithCharacter,
   ScriptRecord,
   ScriptSetup,
-} from '@/lib/rehearsal-data';
+} from "@/lib/rehearsal-data";
 
 export interface PipelineProgress {
   step: number;
   totalSteps: number;
   message: string;
-  stage: 'sanitize' | 'calibrate' | 'segment_spatial' | 'matrix_cast' | 'assemble' | 'done';
+  stage: "sanitize" | "calibrate" | "segment_spatial" | "matrix_cast" | "assemble" | "done";
 }
 
 export interface PipelineResult {
@@ -49,6 +49,8 @@ export interface PipelineResult {
     charactersPerScene: Record<string, string[]>;
     hardware: HardwareStatus;
     usedTinyLLM: boolean;
+    /** Origen de la calibración: ollama | fastapi | spatial_heuristic */
+    source: "ollama" | "fastapi" | "spatial_heuristic";
     formatDetected: string;
   };
   rules: ScriptRules;
@@ -60,23 +62,23 @@ export interface PipelineResult {
 }
 
 const AVAILABLE_TTS_VOICES = [
-  'Sofia (Femenina)',
-  'Diego (Masculino)',
-  'Carmen (Femenina)',
-  'Mateo (Masculino)',
-  'Lucia (Femenina)',
-  'Alejandro (Masculino)',
+  "Sofia (Femenina)",
+  "Diego (Masculino)",
+  "Carmen (Femenina)",
+  "Mateo (Masculino)",
+  "Lucia (Femenina)",
+  "Alejandro (Masculino)",
 ];
 
 export function sanitizeRawText(text: string): string {
   return text
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/\f/g, '\n')
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\f/g, "\n")
     .replace(/[“”«»]/g, '"')
     .replace(/[‘’`]/g, "'")
-    .replace(/[—–]/g, '-')
-    .replace(/^\s*(?:-\s*\d+\s*-|pág(?:ina)?\.?\s*\d+|\d+)\s*$/gim, '')
+    .replace(/[—–]/g, "-")
+    .replace(/^\s*(?:-\s*\d+\s*-|pág(?:ina)?\.?\s*\d+|\d+)\s*$/gim, "")
     .trim();
 }
 
@@ -87,7 +89,7 @@ export async function executeScriptPipeline(
   draft: ScriptImportDraft,
   userId: string,
   onProgress?: (progress: PipelineProgress) => void,
-  numPhysicalActors: number = 1
+  numPhysicalActors: number = 1,
 ): Promise<PipelineResult> {
   const now = new Date().toISOString();
   const scriptId = `local-script-${crypto.randomUUID()}`;
@@ -96,8 +98,8 @@ export async function executeScriptPipeline(
   onProgress?.({
     step: 1,
     totalSteps: 5,
-    message: 'Sanitizando texto y extrayendo coordenadas espaciales...',
-    stage: 'sanitize',
+    message: "Sanitizando texto y extrayendo coordenadas espaciales...",
+    stage: "sanitize",
   });
   const cleanText = sanitizeRawText(draft.rawText);
   const geometricLines = extractGeometricLinesFromText(cleanText);
@@ -106,19 +108,19 @@ export async function executeScriptPipeline(
   onProgress?.({
     step: 2,
     totalSteps: 5,
-    message: 'Calibrando reglas espaciales con TinyLLM (sangrías X y formato)...',
-    stage: 'calibrate',
+    message: "Calibrando reglas espaciales con TinyLLM (sangrías X y formato)...",
+    stage: "calibrate",
   });
   const { rules, source } = await calibrateScriptWithTinyLLM(geometricLines);
   const hardware = await checkTinyLLMHardware();
-  const usedTinyLLM = source === 'ollama' || source === 'fastapi';
+  const usedTinyLLM = source === "ollama" || source === "fastapi";
 
   // ─── PASO 3: Segmentación espacial de Actos, Escenas y Diálogos ────────────
   onProgress?.({
     step: 3,
     totalSteps: 5,
-    message: 'Segmentando escenas y separando parlamentos de acotaciones...',
-    stage: 'segment_spatial',
+    message: "Segmentando escenas y separando parlamentos de acotaciones...",
+    stage: "segment_spatial",
   });
   const geometricResult = parseGeometricScript(geometricLines, rules);
 
@@ -126,8 +128,8 @@ export async function executeScriptPipeline(
   onProgress?.({
     step: 4,
     totalSteps: 5,
-    message: 'Calculando matriz de co-ocurrencia y reparto óptimo de actores...',
-    stage: 'matrix_cast',
+    message: "Calculando matriz de co-ocurrencia y reparto óptimo de actores...",
+    stage: "matrix_cast",
   });
   const conflictMatrix = computeConflictMatrixInMemory(
     geometricResult.scenes.map((s) => ({
@@ -136,21 +138,21 @@ export async function executeScriptPipeline(
         characterName: l.characterName,
         text: l.text,
       })),
-    }))
+    })),
   );
 
   const initialCast = assignCharactersToHumans(
     conflictMatrix.characterStats,
     conflictMatrix.directDialogueMatrix,
-    numPhysicalActors
+    numPhysicalActors,
   );
 
   // ─── PASO 5: Ensamblaje en formato canónico ScriptSetup ─────────────────────
   onProgress?.({
     step: 5,
     totalSteps: 5,
-    message: 'Construyendo libreto, escenas y reparto para ensayar...',
-    stage: 'assemble',
+    message: "Construyendo libreto, escenas y reparto para ensayar...",
+    stage: "assemble",
   });
 
   // 1. Crear registros de Personajes
@@ -162,9 +164,9 @@ export async function executeScriptPipeline(
       script_id: scriptId,
       name: stat.name,
       role: `${stat.totalWords} palabras (${stat.scenes.size} escenas)`,
-      actor_type: isFirst ? 'user' : 'ai',
-      voice: isFirst ? 'Tu voz' : AVAILABLE_TTS_VOICES[voiceIndex],
-      base_emotion: 'Neutral',
+      actor_type: isFirst ? "user" : "ai",
+      voice: isFirst ? "Tu voz" : AVAILABLE_TTS_VOICES[voiceIndex],
+      base_emotion: "Neutral",
       sort_order: idx + 1,
       created_at: now,
     };
@@ -180,7 +182,7 @@ export async function executeScriptPipeline(
     location: null,
     description:
       sc.description?.trim() ||
-      `Escena detectada por parser espacial (${sc.lines.filter((l) => l.type === 'dialogo').length} líneas).`,
+      `Escena detectada por parser espacial (${sc.lines.filter((l) => l.type === "dialogo").length} líneas).`,
     sort_order: idx + 1,
     created_at: now,
   }));
@@ -197,11 +199,11 @@ export async function executeScriptPipeline(
     let pendingCue: string | null = null;
 
     for (const lineGeo of scGeo.lines) {
-      if (lineGeo.type === 'acotacion') {
+      if (lineGeo.type === "acotacion") {
         pendingCue = pendingCue ? `${pendingCue} · ${lineGeo.text}` : lineGeo.text;
         continue;
       }
-      if (lineGeo.type !== 'dialogo') continue;
+      if (lineGeo.type !== "dialogo") continue;
 
       const speakerName = lineGeo.characterName?.trim().toUpperCase();
       const charRecord = speakerName ? charMapByName.get(speakerName) : null;
@@ -211,7 +213,9 @@ export async function executeScriptPipeline(
       const durationSeconds = Math.max(3, Math.min(45, Math.ceil(wordCount / 2.3)));
 
       const cue = lineGeo.parenthetical
-        ? (pendingCue ? `${pendingCue} (${lineGeo.parenthetical})` : lineGeo.parenthetical)
+        ? pendingCue
+          ? `${pendingCue} (${lineGeo.parenthetical})`
+          : lineGeo.parenthetical
         : pendingCue;
       pendingCue = null;
 
@@ -232,18 +236,16 @@ export async function executeScriptPipeline(
   }
 
   // 4. Conteo de Actos
-  const actsCount = Math.max(
-    1,
-    geometricResult.scenes.filter((s) => s.actTitle).length || 1
-  );
+  const actsCount = Math.max(1, geometricResult.scenes.filter((s) => s.actTitle).length || 1);
 
   // 5. Registro del Libreto
   const script: ScriptRecord = {
     id: scriptId,
     user_id: userId,
-    title: draft.title.trim() || 'Libreto importado',
+    title: draft.title.trim() || "Libreto importado",
     author: draft.author?.trim() || null,
-    genre: draft.genre?.trim() || (rules.formatoDetectado === 'teatro_hispano' ? 'Teatro' : 'Guion'),
+    genre:
+      draft.genre?.trim() || (rules.formatoDetectado === "teatro_hispano" ? "Teatro" : "Guion"),
     act_count: actsCount,
     description:
       draft.description?.trim() ||
@@ -254,7 +256,7 @@ export async function executeScriptPipeline(
     created_at: now,
     updated_at: now,
     raw_text: draft.rawText,
-    source_type: 'imported',
+    source_type: "imported",
     imported_at: now,
     deleted_at: null,
   };
@@ -271,7 +273,7 @@ export async function executeScriptPipeline(
     step: 5,
     totalSteps: 5,
     message: `¡Pipeline completado! ${scenes.length} escenas y ${characters.length} personajes listos para ensayar.`,
-    stage: 'done',
+    stage: "done",
   });
 
   return {
@@ -284,6 +286,7 @@ export async function executeScriptPipeline(
       charactersPerScene,
       hardware,
       usedTinyLLM,
+      source,
       formatDetected: rules.formatoDetectado,
     },
     rules,

@@ -2,8 +2,7 @@
 tiny_llm_characters.py
 Motor TinyLLM con autodetección de hardware (GPU CUDA / Apple MPS / CPU)
 para detección, limpieza y normalización de nombres de personajes en libretos.
-Diseñado para correr en máquinas sin GPU dedicada (usando Qwen2.5-0.5B-Instruct en CPU)
-y aprovechar GPU automáticamente cuando esté disponible.
+Si falta torch/transformers, usa solo la heurística (used_tiny_llm=false).
 """
 
 from __future__ import annotations
@@ -12,11 +11,15 @@ import json
 import os
 import re
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None  # type: ignore
+    HAS_TORCH = False
 
-# Intentar importar HuggingFace Transformers (ligero y compatible con PyTorch ya instalado)
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
     HAS_TRANSFORMERS = True
@@ -24,7 +27,6 @@ except ImportError:
     HAS_TRANSFORMERS = False
 
 
-# Lista negra determinista de respaldo para descartar falsos positivos de guiones
 STAGE_DIRECTION_BLACKLIST = {
     "ACTO", "ACTO I", "ACTO II", "ACTO III", "ACTO IV", "ACTO V",
     "ESCENA", "CUADRO", "PRÓLOGO", "PROLOGO", "EPÍLOGO", "EPILOGO",
@@ -32,37 +34,31 @@ STAGE_DIRECTION_BLACKLIST = {
     "FIN", "THE END", "TELÓN", "TELON", "OSCURO", "APAGÓN", "APAGON",
     "CORTE A", "CUT TO", "FADE IN", "FADE OUT", "FUNDIDO A NEGRO",
     "TRANSICIÓN", "TRANSICION", "PAUSA", "SILENCIO", "NOTA",
-    "PÁGINA", "PAGINA", "INT.", "EXT.", "INT/EXT", "I/E"
+    "PÁGINA", "PAGINA", "INT.", "EXT.", "INT/EXT", "I/E",
 }
 
 
 @dataclass
 class HardwareReport:
-    device: str               # "cuda", "mps" o "cpu"
-    device_name: str          # Ej. "NVIDIA GeForce RTX 3060" o "CPU (8 hilos)"
+    device: str
+    device_name: str
     gpu_available: bool
     vram_gb: Optional[float]
-    dtype: str                # "float16" en GPU, "float32" en CPU
+    dtype: str
     model_id: str
 
 
 @dataclass
 class CharacterDetectionResult:
-    characters: List[str]                # Lista limpia de personajes canónicos
-    alias_map: Dict[str, str]            # Mapeo de variante -> personaje canónico
-    discarded: List[str]                 # Falsos positivos descartados (acotaciones/encabezados)
-    line_counts: Dict[str, int]          # Cantidad de intervenciones por personaje canónico
-    hardware: Dict[str, object]          # Información del hardware utilizado (GPU vs CPU)
-    used_tiny_llm: bool                  # True si el TinyLLM procesó la salida
+    characters: List[str]
+    alias_map: Dict[str, str]
+    discarded: List[str]
+    line_counts: Dict[str, int]
+    hardware: Dict[str, object]
+    used_tiny_llm: bool
 
 
 class TinyLLMCharacterDetector:
-    """
-    Detector de personajes impulsado por un TinyLLM (por defecto Qwen/Qwen2.5-0.5B-Instruct, ~1 GB).
-    - Revisa automáticamente si hay GPU (CUDA o Apple Silicon MPS) y la usa en float16.
-    - Si NO hay GPU, configura PyTorch para inferencia optimizada en CPU sin requerir tarjeta gráfica.
-    """
-
     def __init__(self, model_id: Optional[str] = None):
         self.model_id = model_id or os.getenv(
             "TINY_LLM_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"
@@ -72,9 +68,18 @@ class TinyLLMCharacterDetector:
         self.model = None
         self._load_attempted = False
 
-    def _detect_hardware(self) -> Tuple[str, torch.dtype, HardwareReport]:
-        """Verifica dinámicamente si existe GPU disponible o hace fallback limpio a CPU."""
-        # 1. Revisar GPU NVIDIA (CUDA)
+    def _detect_hardware(self) -> Tuple[str, Any, HardwareReport]:
+        if not HAS_TORCH:
+            report = HardwareReport(
+                device="cpu",
+                device_name="CPU (sin torch; heurística)",
+                gpu_available=False,
+                vram_gb=None,
+                dtype="float32",
+                model_id=self.model_id,
+            )
+            return "cpu", None, report
+
         if torch.cuda.is_available():
             dev_name = torch.cuda.get_device_name(0)
             props = torch.cuda.get_device_properties(0)
@@ -88,10 +93,8 @@ class TinyLLMCharacterDetector:
                 dtype=str(dtype).replace("torch.", ""),
                 model_id=self.model_id,
             )
-            print(f"[TinyLLM] GPU CUDA detectada: {dev_name} ({vram} GB VRAM) -> Usando {report.dtype}")
             return "cuda", dtype, report
 
-        # 2. Revisar GPU Apple Silicon (Metal Performance Shaders - MPS)
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             report = HardwareReport(
                 device="mps",
@@ -101,10 +104,8 @@ class TinyLLMCharacterDetector:
                 dtype="float16",
                 model_id=self.model_id,
             )
-            print("[TinyLLM] GPU Apple MPS detectada -> Usando float16")
             return "mps", torch.float16, report
 
-        # 3. Fallback a CPU (optimizando hilos para no congelar la máquina)
         cpu_count = os.cpu_count() or 4
         optimal_threads = max(1, min(cpu_count - 1, 8))
         try:
@@ -120,19 +121,17 @@ class TinyLLMCharacterDetector:
             dtype="float32",
             model_id=self.model_id,
         )
-        print(f"[TinyLLM] Sin GPU dedicada. Ejecutando en {report.device_name} (float32).")
         return "cpu", torch.float32, report
 
     def load_model(self) -> bool:
-        """Carga perezosa (lazy loading) del TinyLLM en el dispositivo detectado."""
         if self.model is not None and self.tokenizer is not None:
             return True
         if self._load_attempted:
             return False
 
         self._load_attempted = True
-        if not HAS_TRANSFORMERS:
-            print("[TinyLLM] 'transformers' no está instalado. Se usará el filtro heurístico de respaldo.")
+        if not HAS_TORCH or not HAS_TRANSFORMERS:
+            print("[TinyLLM] torch/transformers no disponibles. Heurística de respaldo.")
             return False
 
         try:
@@ -145,28 +144,22 @@ class TinyLLMCharacterDetector:
             )
             self.model.to(self.device)
             self.model.eval()
-            print(f"[TinyLLM] Modelo cargado correctamente en {self.device.upper()} ✓")
+            print(f"[TinyLLM] Modelo cargado en {self.device.upper()} ✓")
             return True
         except Exception as exc:
-            print(f"[TinyLLM] No se pudo cargar el modelo ({exc}). Usando heurística de respaldo.")
+            print(f"[TinyLLM] No se pudo cargar el modelo ({exc}). Heurística.")
             self.model = None
             self.tokenizer = None
             return False
 
     @staticmethod
     def extract_raw_candidates(script_text: str) -> Dict[str, int]:
-        """
-        Extrae en <5 ms todos los candidatos potenciales a nombres de personajes
-        a partir del texto del libreto (formatos teatral y cinematográfico).
-        """
         lines = [l.strip() for l in script_text.replace("\r\n", "\n").split("\n")]
         counts: Dict[str, int] = {}
 
-        # Patrón 1: "NOMBRE (acotación): Diálogo" o "NOMBRE: Diálogo"
         inline_re = re.compile(
             r"^([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ0-9\s\.\-]{1,32}?)(?:\s*\([^)]+\))?\s*[:\.\-—]+\s+.+$"
         )
-        # Patrón 2: Línea exclusiva en MAYÚSCULAS (hasta 35 caracteres)
         standalone_re = re.compile(
             r"^([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ0-9\s\.\-]{1,32}?)(?:\s*\([^)]+\))?\s*:?$"
         )
@@ -214,12 +207,6 @@ class TinyLLMCharacterDetector:
         return cleaned
 
     def detect_characters(self, script_text: str) -> CharacterDetectionResult:
-        """
-        1. Extrae los candidatos rápidos del texto.
-        2. Si el TinyLLM está disponible (en GPU o CPU), clasifica cuáles son nombres reales de
-           personas/personajes, descarta encabezados de escena y agrupa alias (ej. "SR. PÉREZ" -> "PÉREZ").
-        3. Si no, aplica limpieza heurística determinista.
-        """
         raw_counts = self.extract_raw_candidates(script_text)
         candidates = list(raw_counts.keys())
 
@@ -233,7 +220,6 @@ class TinyLLMCharacterDetector:
                 used_tiny_llm=False,
             )
 
-        # Pre-filtrar casos obvios de encabezados de acto/escena
         pre_filtered: List[str] = []
         discarded: List[str] = []
         for cand in candidates:
@@ -259,7 +245,6 @@ class TinyLLMCharacterDetector:
                     if k not in discarded and v not in discarded
                 }
 
-        # Consolidar conteo de líneas por personaje canónico
         canonical_counts: Dict[str, int] = {}
         final_alias_map: Dict[str, str] = {}
 
@@ -286,6 +271,31 @@ class TinyLLMCharacterDetector:
             used_tiny_llm=used_llm,
         )
 
+    def calibrate_script_rules(self, sample_text: str) -> Dict[str, Any]:
+        """Devuelve reglas compatibles con ScriptRulesSchema del frontend."""
+        lines = [l.strip() for l in sample_text.replace("\r\n", "\n").split("\n") if l.strip()]
+        inline_count = 0
+        for line in lines[:150]:
+            # Quitar prefijo [X=..] si viene del calibrador del frontend
+            text = re.sub(r"^\[X=[^\]]+\]\s*", "", line)
+            if re.match(
+                r"^[A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜa-záéíóúñü0-9\s\.\-]{1,30}?(?:\s*\([^)]+\))?\s*(?::|\.-|[–—])\s*.+$",
+                text,
+            ):
+                inline_count += 1
+
+        usa_prefijo = inline_count >= 3
+        return {
+            "formatoDetectado": "teatro_hispano" if usa_prefijo else "cine_estandar",
+            "xMinPersonaje": 0,
+            "xMinDialogo": 4 if usa_prefijo else 12,
+            "usaPrefijoEnLinea": usa_prefijo,
+            "aliasPersonajes": {},
+        }
+
+    def hardware_status(self) -> Dict[str, object]:
+        return asdict(self.hw_report)
+
     @staticmethod
     def _is_obvious_non_character(name: str) -> bool:
         if name in STAGE_DIRECTION_BLACKLIST:
@@ -297,16 +307,11 @@ class TinyLLMCharacterDetector:
     def _query_tiny_llm(
         self, candidates: List[str]
     ) -> Optional[Tuple[Dict[str, str], List[str]]]:
-        """
-        Ejecuta inferencia rápida en el TinyLLM pidiendo exclusivamente un JSON
-        con los personajes reales, sus alias unificados y los falsos positivos descartados.
-        """
         system_prompt = (
             "Eres un analizador experto de guiones teatrales en español. "
             "Recibirás una lista de textos en mayúsculas extraídos de un libreto. "
             "Identifica cuáles son nombres de personajes reales, unifica variantes del mismo personaje "
-            "(ejemplo: 'GUARDIA 1' y 'GUARDIA' o 'DR. PÉREZ' y 'PÉREZ') y descarta textos que sean "
-            "acotaciones, encabezados de escena o transiciones. "
+            "y descarta textos que sean acotaciones o encabezados. "
             "Responde ÚNICAMENTE con un objeto JSON válido con las claves "
             "'alias_map' (objeto {nombre_original: nombre_canonico}) y 'discarded' (lista de strings)."
         )
@@ -334,7 +339,6 @@ class TinyLLMCharacterDetector:
             generated_ids = output_ids[0][inputs.input_ids.shape[1]:]
             response_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-            # Extraer el bloque JSON de la respuesta del TinyLLM
             json_match = re.search(r"\{.*\}", response_text, flags=re.DOTALL)
             if not json_match:
                 return None
@@ -358,3 +362,13 @@ class TinyLLMCharacterDetector:
         except Exception as exc:
             print(f"[TinyLLM] Error durante la inferencia: {exc}")
             return None
+
+
+_detector: Optional[TinyLLMCharacterDetector] = None
+
+
+def get_detector() -> TinyLLMCharacterDetector:
+    global _detector
+    if _detector is None:
+        _detector = TinyLLMCharacterDetector()
+    return _detector

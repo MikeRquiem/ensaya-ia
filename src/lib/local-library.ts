@@ -24,6 +24,12 @@ type LocalLibrary = {
 
 type ParsedImportLine = { characterName: string | null; text: string };
 
+export type ImportedSceneGroup = {
+  title: string;
+  location?: string | null;
+  lines: ParsedImportLine[];
+};
+
 function emptyLibrary(): LocalLibrary {
   return { scripts: [], setups: {} };
 }
@@ -130,22 +136,44 @@ function parseSceneBody(body: string): ParsedImportLine[] {
   return parsed;
 }
 
+/** Persiste un ScriptSetup ya armado (p. ej. salida del pipeline espacial). */
+export function saveLocalScriptSetup(setup: ScriptSetup) {
+  if (!setup.script) {
+    throw new Error("No hay libreto para guardar.");
+  }
+  const script = setup.script;
+  const library = readLibrary();
+  library.scripts = [script, ...library.scripts.filter((item) => item.id !== script.id)];
+  library.setups[script.id] = {
+    script,
+    scenes: setup.scenes,
+    scene: setup.scene ?? setup.scenes[0] ?? null,
+    characters: setup.characters,
+    lines: setup.lines,
+  };
+  writeLibrary(library);
+  return script;
+}
+
 export function saveImportedLocalScript(
   draft: ScriptImportDraft,
   userId: string,
   parsedLines: ParsedImportLine[],
+  sceneGroups?: ImportedSceneGroup[],
 ) {
   const now = new Date().toISOString();
   const scriptId = `local-script-${crypto.randomUUID()}`;
 
   const sceneChunks = splitRawTextIntoScenes(draft.rawText);
-  const sceneLineGroups =
-    sceneChunks.length === 1 && !isSceneHeaderLine(sceneChunks[0]?.title ?? "")
-      ? [{ title: "Escena importada", lines: parsedLines }]
-      : sceneChunks.map((chunk) => ({
-          title: chunk.title,
-          lines: parseSceneBody(chunk.body),
-        }));
+  const sceneLineGroups: ImportedSceneGroup[] =
+    sceneGroups && sceneGroups.some((group) => group.lines.length > 0)
+      ? sceneGroups.filter((group) => group.lines.length > 0)
+      : sceneChunks.length === 1 && !isSceneHeaderLine(sceneChunks[0]?.title ?? "")
+        ? [{ title: "Escena importada", lines: parsedLines }]
+        : sceneChunks.map((chunk) => ({
+            title: chunk.title,
+            lines: parseSceneBody(chunk.body),
+          }));
 
   const allLines = sceneLineGroups.flatMap((group) => group.lines);
   const names = Array.from(
@@ -190,11 +218,13 @@ export function saveImportedLocalScript(
     id: `local-scene-${crypto.randomUUID()}`,
     script_id: scriptId,
     title: group.title || `Escena ${index + 1}`,
-    location: null,
+    location: group.location?.trim() || null,
     description:
-      sceneLineGroups.length === 1
-        ? "Escena creada al importar el libreto."
-        : `Escena detectada por encabezado al importar.`,
+      sceneGroups && sceneGroups.length
+        ? "Escena detectada al importar el libreto."
+        : sceneLineGroups.length === 1
+          ? "Escena creada al importar el libreto."
+          : "Escena detectada por encabezado al importar.",
     sort_order: index + 1,
     created_at: now,
   }));

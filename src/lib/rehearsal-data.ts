@@ -17,8 +17,13 @@ import {
   removeLocalScript,
   rewriteLocalScriptDialogue,
   saveImportedLocalScript,
+  saveLocalScriptSetup,
   duplicateLocalSetup,
+  type ImportedSceneGroup,
 } from "@/lib/local-library";
+
+export { saveLocalScriptSetup };
+import { requestScriptSegment } from "@/lib/ai/request-script-segment";
 import { getDemoScriptSetup } from "@/lib/demo-script";
 import { withTimeout } from "@/lib/browser";
 import { cleanCharacterName, isCharacterCue, splitNamedCue } from "@/lib/script-text";
@@ -356,19 +361,61 @@ export async function getScriptDetails(scriptId: string): Promise<ScriptDetails>
   };
 }
 
+async function segmentImportedScript(
+  draft: ScriptImportDraft,
+): Promise<ImportedSceneGroup[] | null> {
+  try {
+    const segmented = await requestScriptSegment({
+      rawText: draft.rawText,
+      title: draft.title,
+    });
+    if (!segmented?.scenes.length) return null;
+    const groups = segmented.scenes.map((scene) => ({
+      title: scene.title,
+      location: scene.location,
+      lines: scene.lines,
+    }));
+    return groups.some((group) => group.lines.length > 0) ? groups : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function importScriptFromText(draft: ScriptImportDraft) {
   const user = await getCurrentUser();
   if (!user) throw new Error("Inicia sesión para importar libretos.");
 
-  const parsedLines = parseImportedScriptLines(draft.rawText);
+  const segmentedGroups = await segmentImportedScript(draft);
+  const parsedLines = segmentedGroups
+    ? segmentedGroups.flatMap((group) => group.lines)
+    : parseImportedScriptLines(draft.rawText);
   if (parsedLines.length === 0) {
     throw new Error(
-      "No se encontraron líneas de diálogo para importar. Verifica el formato del texto.",
+      "No se encontraron líneas de diálogo. Prueba .txt, .md o un PDF con texto, con nombres en MAYÚSCULAS o en formato Nombre:.",
     );
   }
 
+  const characterCount = new Set(parsedLines.map((line) => line.characterName).filter(Boolean))
+    .size;
+  const draftWithNotes: ScriptImportDraft = segmentedGroups
+    ? {
+        ...draft,
+        description: [
+          draft.description?.trim(),
+          `${segmentedGroups.length} escena${segmentedGroups.length === 1 ? "" : "s"} y ${characterCount} personaje${characterCount === 1 ? "" : "s"} detectados.`,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      }
+    : draft;
+
   if (isLocalUserId(user.id)) {
-    return saveImportedLocalScript(draft, user.id, parsedLines);
+    return saveImportedLocalScript(
+      draftWithNotes,
+      user.id,
+      parsedLines,
+      segmentedGroups ?? undefined,
+    );
   }
 
   try {
@@ -439,7 +486,12 @@ export async function importScriptFromText(draft: ScriptImportDraft) {
       throw error;
     }
   } catch {
-    return saveImportedLocalScript(draft, user.id, parsedLines);
+    return saveImportedLocalScript(
+      draftWithNotes,
+      user.id,
+      parsedLines,
+      segmentedGroups ?? undefined,
+    );
   }
 }
 

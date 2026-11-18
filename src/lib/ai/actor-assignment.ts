@@ -1,7 +1,7 @@
 /**
  * actor-assignment.ts
  * Algoritmo de Reparto Inteligente (N Personajes -> P Personas Físicas)
- * 
+ *
  * Resuelve matemáticamente quién interpreta a qué personajes cuando hay menos actores
  * humanos que personajes en el libreto (P < C), optimizando una función de costo para:
  * 1. Prohibir/penalizar que una persona hable consigo misma en turnos consecutivos (diálogo directo).
@@ -37,8 +37,8 @@ export interface CastAssignmentResult {
 
 // ─── Pesos de penalización de la función de costo ─────────────────────────────
 const ALPHA_DIRECT_DIALOGUE = 10000; // Prohibido hablar consigo mismo en turnos seguidos
-const BETA_SAME_SCENE = 500;         // Evitar coincidir en la misma escena
-const GAMMA_WORD_BALANCE = 1;        // Equilibrar cantidad de texto a leer
+const BETA_SAME_SCENE = 500; // Evitar coincidir en la misma escena
+const GAMMA_WORD_BALANCE = 1; // Equilibrar cantidad de texto a leer
 
 /**
  * Asigna matemáticamente personajes a personas físicas minimizando conflictos escénicos.
@@ -46,7 +46,7 @@ const GAMMA_WORD_BALANCE = 1;        // Equilibrar cantidad de texto a leer
 export function assignCharactersToHumans(
   characters: CharacterStats[],
   directDialogueMatrix: Record<string, Record<string, number>>, // Veces que A habla directo con B
-  numPhysicalHumans: number
+  numPhysicalHumans: number,
 ): CastAssignmentResult {
   if (numPhysicalHumans < 1) {
     numPhysicalHumans = 1;
@@ -56,16 +56,13 @@ export function assignCharactersToHumans(
   const sortedChars = [...characters].sort((a, b) => b.totalWords - a.totalWords);
 
   // 2. Inicializar las P personas físicas (ej. 4 actores humanos)
-  const humans: PhysicalActorAssignment[] = Array.from(
-    { length: numPhysicalHumans },
-    (_, i) => ({
-      actorIndex: i + 1,
-      actorName: i === 0 ? 'Tú (Actor principal)' : `Actor ${i + 1}`,
-      assignedCharacters: [],
-      totalWords: 0,
-      sceneCollisions: [],
-    })
-  );
+  const humans: PhysicalActorAssignment[] = Array.from({ length: numPhysicalHumans }, (_, i) => ({
+    actorIndex: i + 1,
+    actorName: i === 0 ? "Tú (Actor principal)" : `Actor ${i + 1}`,
+    assignedCharacters: [],
+    totalWords: 0,
+    sceneCollisions: [],
+  }));
 
   const aiTtsFallbackCharacters: { sceneId: string | number; character: string }[] = [];
   let unavoidableConflicts = 0;
@@ -152,7 +149,7 @@ export function computeConflictMatrixInMemory(
   scenes: Array<{
     id: string | number;
     lines: Array<{ characterName?: string | null; text: string }>;
-  }>
+  }>,
 ): {
   characterStats: CharacterStats[];
   directDialogueMatrix: Record<string, Record<string, number>>;
@@ -193,13 +190,11 @@ export function computeConflictMatrixInMemory(
     }
   }
 
-  const characterStats: CharacterStats[] = Array.from(statsMap.entries()).map(
-    ([name, s]) => ({
-      name,
-      totalWords: s.totalWords,
-      scenes: s.scenes,
-    })
-  );
+  const characterStats: CharacterStats[] = Array.from(statsMap.entries()).map(([name, s]) => ({
+    name,
+    totalWords: s.totalWords,
+    scenes: s.scenes,
+  }));
 
   return { characterStats, directDialogueMatrix };
 }

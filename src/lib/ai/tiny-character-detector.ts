@@ -1,3 +1,4 @@
+/* eslint-disable no-useless-escape */
 /**
  * tiny-character-detector.ts
  * Cliente y motor de detección de nombres de personajes asistido por TinyLLM.
@@ -6,8 +7,10 @@
  * - Si no hay ningún servidor local activo, aplica el clasificador determinista en CPU del navegador.
  */
 
+import { getTeleprompterUrl } from "./optional-services";
+
 export interface HardwareStatus {
-  device: 'cuda' | 'mps' | 'cpu' | 'browser-cpu';
+  device: "cuda" | "mps" | "cpu" | "browser-cpu";
   device_name: string;
   gpu_available: boolean;
   vram_gb: number | null;
@@ -24,54 +27,89 @@ export interface CharacterDetectionResponse {
   used_tiny_llm: boolean;
 }
 
-const DEFAULT_TELEPROMPTER_API =
-  (typeof import.meta !== 'undefined' &&
-    (import.meta as unknown as { env?: Record<string, string> }).env
-      ?.VITE_TELEPROMPTER_API_URL) ||
-  'http://localhost:8000';
-
 const STAGE_BLACKLIST = new Set([
-  'ACTO', 'ACTO I', 'ACTO II', 'ACTO III', 'ACTO IV', 'ACTO V',
-  'ESCENA', 'CUADRO', 'PRÓLOGO', 'PROLOGO', 'EPÍLOGO', 'EPILOGO',
-  'CONTINÚA', 'CONTINUA', 'CONTINUED', 'MÁS', 'MAS', 'MORE',
-  'FIN', 'THE END', 'TELÓN', 'TELON', 'OSCURO', 'APAGÓN', 'APAGON',
-  'CORTE A', 'CUT TO', 'FADE IN', 'FADE OUT', 'FUNDIDO A NEGRO',
-  'TRANSICIÓN', 'TRANSICION', 'PAUSA', 'SILENCIO', 'NOTA',
-  'PÁGINA', 'PAGINA', 'INT.', 'EXT.', 'INT/EXT', 'I/E',
+  "ACTO",
+  "ACTO I",
+  "ACTO II",
+  "ACTO III",
+  "ACTO IV",
+  "ACTO V",
+  "ESCENA",
+  "CUADRO",
+  "PRÓLOGO",
+  "PROLOGO",
+  "EPÍLOGO",
+  "EPILOGO",
+  "CONTINÚA",
+  "CONTINUA",
+  "CONTINUED",
+  "MÁS",
+  "MAS",
+  "MORE",
+  "FIN",
+  "THE END",
+  "TELÓN",
+  "TELON",
+  "OSCURO",
+  "APAGÓN",
+  "APAGON",
+  "CORTE A",
+  "CUT TO",
+  "FADE IN",
+  "FADE OUT",
+  "FUNDIDO A NEGRO",
+  "TRANSICIÓN",
+  "TRANSICION",
+  "PAUSA",
+  "SILENCIO",
+  "NOTA",
+  "PÁGINA",
+  "PAGINA",
+  "INT.",
+  "EXT.",
+  "INT/EXT",
+  "I/E",
 ]);
 
 /**
  * Consulta si el servidor local de TinyLLM detectó una GPU disponible o si corre en CPU.
  */
-export async function checkTinyLLMHardware(
-  apiBaseUrl: string = DEFAULT_TELEPROMPTER_API
-): Promise<HardwareStatus> {
-  // 1. Verificar backend Python FastAPI (/characters/hardware)
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2500);
-    const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/characters/hardware`, {
-      method: 'GET',
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (res.ok) {
-      return (await res.json()) as HardwareStatus;
+export async function checkTinyLLMHardware(apiBaseUrl?: string): Promise<HardwareStatus> {
+  const baseUrl = (apiBaseUrl?.trim() || getTeleprompterUrl() || "").replace(/\/$/, "");
+
+  // 1. Verificar backend Python FastAPI solo si hay URL configurada
+  if (baseUrl) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const res = await fetch(`${baseUrl}/characters/hardware`, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        return (await res.json()) as HardwareStatus;
+      }
+    } catch {
+      // Continúa a verificación WebGPU / CPU en navegador
     }
-  } catch {
-    // Continúa a verificación WebGPU / CPU en navegador
   }
 
   // 2. Verificar si el navegador cuenta con adaptador WebGPU disponible
   let browserGpuAvailable = false;
-  let browserGpuName = 'CPU del Navegador (Sin GPU dedicada)';
+  let browserGpuName = "CPU del Navegador (Sin GPU dedicada)";
   try {
-    const nav = typeof navigator !== 'undefined' ? (navigator as unknown as { gpu?: { requestAdapter: () => Promise<{ info?: { description?: string } } | null> } }) : null;
+    const nav =
+      typeof navigator !== "undefined"
+        ? (navigator as unknown as {
+            gpu?: { requestAdapter: () => Promise<{ info?: { description?: string } } | null> };
+          })
+        : null;
     if (nav?.gpu) {
       const adapter = await nav.gpu.requestAdapter();
       if (adapter) {
         browserGpuAvailable = true;
-        browserGpuName = adapter.info?.description || 'GPU detectada vía WebGPU';
+        browserGpuName = adapter.info?.description || "GPU detectada vía WebGPU";
       }
     }
   } catch {
@@ -79,12 +117,12 @@ export async function checkTinyLLMHardware(
   }
 
   return {
-    device: 'browser-cpu',
+    device: "browser-cpu",
     device_name: browserGpuName,
     gpu_available: browserGpuAvailable,
     vram_gb: null,
-    dtype: browserGpuAvailable ? 'float16' : 'float32',
-    model_id: 'fallback-heuristic-cpu',
+    dtype: browserGpuAvailable ? "float16" : "float32",
+    model_id: "fallback-heuristic-cpu",
   };
 }
 
@@ -94,29 +132,33 @@ export async function checkTinyLLMHardware(
  */
 export async function detectCharactersWithTinyLLM(
   scriptText: string,
-  apiBaseUrl: string = DEFAULT_TELEPROMPTER_API
+  apiBaseUrl?: string,
 ): Promise<CharacterDetectionResponse> {
-  // 1. Intentar con el backend Python (que corre Qwen2.5-0.5B-Instruct en GPU o CPU)
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/characters/detect`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ script_text: scriptText }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
+  const baseUrl = (apiBaseUrl?.trim() || getTeleprompterUrl() || "").replace(/\/$/, "");
 
-    if (res.ok) {
-      return (await res.json()) as CharacterDetectionResponse;
+  // 1. Backend Python solo si VITE_TELEPROMPTER_URL (o compat) está definida
+  if (baseUrl) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`${baseUrl}/characters/detect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ script_text: scriptText }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        return (await res.json()) as CharacterDetectionResponse;
+      }
+    } catch {
+      // Si el backend no responde, usa el respaldo local en CPU
     }
-  } catch {
-    // Si el backend Python no está levantado, usa el respaldo local en CPU
   }
 
-  // 2. Fallback determinista en CPU (sin necesidad de GPU ni servidor externo)
-  const hw = await checkTinyLLMHardware(apiBaseUrl);
+  // 2. Fallback determinista en CPU (sin fetch a localhost)
+  const hw = await checkTinyLLMHardware(baseUrl || undefined);
   return fallbackCpuCharacterDetection(scriptText, hw);
 }
 
@@ -125,16 +167,18 @@ export async function detectCharactersWithTinyLLM(
  */
 export function fallbackCpuCharacterDetection(
   scriptText: string,
-  hardware?: HardwareStatus
+  hardware?: HardwareStatus,
 ): CharacterDetectionResponse {
-  const lines = scriptText.replace(/\r\n/g, '\n').split('\n').map((l) => l.trim());
+  const lines = scriptText
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((l) => l.trim());
   const rawCounts: Record<string, number> = {};
   const discarded: string[] = [];
 
   const inlineRegex =
     /^([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ0-9\s\.\-]{1,32}?)(?:\s*\([^)]+\))?\s*[:\.\-—]+\s+.+$/;
-  const standaloneRegex =
-    /^([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ0-9\s\.\-]{1,32}?)(?:\s*\([^)]+\))?\s*:?$/;
+  const standaloneRegex = /^([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ0-9\s\.\-]{1,32}?)(?:\s*\([^)]+\))?\s*:?$/;
 
   let currentSpeaker: string | null = null;
 
@@ -197,12 +241,12 @@ export function fallbackCpuCharacterDetection(
     discarded,
     line_counts: lineCounts,
     hardware: hardware ?? {
-      device: 'browser-cpu',
-      device_name: 'CPU Local (Fallback determinista)',
+      device: "browser-cpu",
+      device_name: "CPU Local (Fallback determinista)",
       gpu_available: false,
       vram_gb: null,
-      dtype: 'float32',
-      model_id: 'fallback-heuristic-cpu',
+      dtype: "float32",
+      model_id: "fallback-heuristic-cpu",
     },
     used_tiny_llm: false,
   };
@@ -210,14 +254,14 @@ export function fallbackCpuCharacterDetection(
 
 function cleanCueName(raw: string): string {
   const withoutTags = raw
-    .replace(/\((?:V\.?O\.?|O\.?S\.?|OFF|CONT'?D|CONTINÚA|VOZ|EN OFF)\)/gi, '')
-    .replace(/[:\.\-—]+$/, '')
-    .replace(/\s+/g, ' ')
+    .replace(/\((?:V\.?O\.?|O\.?S\.?|OFF|CONT'?D|CONTINÚA|VOZ|EN OFF)\)/gi, "")
+    .replace(/[:\.\-—]+$/, "")
+    .replace(/\s+/g, " ")
     .trim()
     .toUpperCase();
 
   if (withoutTags.length < 2 || withoutTags.length > 35 || /^\d+$/.test(withoutTags)) {
-    return '';
+    return "";
   }
   return withoutTags;
 }
