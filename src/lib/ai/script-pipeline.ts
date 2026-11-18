@@ -49,8 +49,8 @@ export interface PipelineResult {
     charactersPerScene: Record<string, string[]>;
     hardware: HardwareStatus;
     usedTinyLLM: boolean;
-    /** Origen de la calibración: ollama | fastapi | spatial_heuristic */
-    source: "ollama" | "fastapi" | "spatial_heuristic";
+    /** Origen: Gemini (servidor) o calibración local */
+    source: "gemini" | "ollama" | "fastapi" | "spatial_heuristic";
     formatDetected: string;
   };
   rules: ScriptRules;
@@ -59,6 +59,47 @@ export interface PipelineResult {
     directDialogueMatrix: Record<string, Record<string, number>>;
   };
   initialCast?: CastAssignmentResult;
+}
+
+/** Envuelve un ScriptSetup (p. ej. de Gemini) en PipelineResult para la UI de revisión. */
+export function pipelineResultFromSetup(
+  setup: ScriptSetup,
+  source: PipelineResult["stats"]["source"],
+  formatDetected: ScriptRules["formatoDetectado"] = "mixto",
+): PipelineResult {
+  const hardware: HardwareStatus = {
+    device: "browser-cpu",
+    device_name: source === "gemini" ? "Gemini (servidor)" : "Navegador",
+    gpu_available: false,
+    vram_gb: null,
+    dtype: "n/a",
+    model_id: source === "gemini" ? "gemini" : "heuristic",
+  };
+  return {
+    setup,
+    stats: {
+      actsCount: Math.max(1, setup.script?.act_count ?? 1),
+      scenesCount: setup.scenes.length,
+      charactersCount: setup.characters.length,
+      linesCount: setup.lines.length,
+      charactersPerScene: {},
+      hardware,
+      usedTinyLLM: source === "ollama" || source === "fastapi",
+      source,
+      formatDetected,
+    },
+    rules: {
+      formatoDetectado: formatDetected,
+      xMinPersonaje: 0,
+      xMinDialogo: 0,
+      usaPrefijoEnLinea: true,
+      aliasPersonajes: {},
+    },
+    conflictMatrix: {
+      characterStats: [],
+      directDialogueMatrix: {},
+    },
+  };
 }
 
 const AVAILABLE_TTS_VOICES = [

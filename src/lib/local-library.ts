@@ -11,6 +11,7 @@ import {
   isSceneHeaderLine,
   splitNamedCue,
 } from "@/lib/script-text";
+import { consolidateScriptLines } from "@/lib/consolidate-script-lines";
 import { getDemoScriptSetup } from "@/lib/demo-script";
 import { readJson, writeJson } from "@/lib/browser";
 import { LEGACY_STORAGE } from "@/lib/legacy-migration";
@@ -149,7 +150,7 @@ export function saveLocalScriptSetup(setup: ScriptSetup) {
     scenes: setup.scenes,
     scene: setup.scene ?? setup.scenes[0] ?? null,
     characters: setup.characters,
-    lines: setup.lines,
+    lines: consolidateScriptLines(setup.lines),
   };
   writeLibrary(library);
   return script;
@@ -259,7 +260,7 @@ export function saveImportedLocalScript(
     scenes,
     scene: scenes[0] ?? null,
     characters,
-    lines,
+    lines: consolidateScriptLines(lines),
   };
   writeLibrary(library);
   return script;

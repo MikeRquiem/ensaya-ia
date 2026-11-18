@@ -129,11 +129,13 @@ export function ScriptPipelineProgress({
                       : "Formato Mixto"}
                 </span>
                 <span className="px-1.5 py-0.5 rounded bg-accent/30 text-accent-foreground font-medium text-[10px]">
-                  {result.stats.source === "ollama"
-                    ? "Ollama"
-                    : result.stats.source === "fastapi"
-                      ? "Modelo local (FastAPI)"
-                      : "Heurística del navegador"}
+                  {result.stats.source === "gemini"
+                    ? "Gemini"
+                    : result.stats.source === "ollama"
+                      ? "Ollama"
+                      : result.stats.source === "fastapi"
+                        ? "Modelo local (FastAPI)"
+                        : "Heurística del navegador"}
                 </span>
               </div>
             </div>

@@ -29,12 +29,15 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { ScriptPipelineProgress } from "@/components/ScriptPipelineProgress";
 import { readScriptFile } from "@/lib/pdf-script";
+import { requestScriptSegment } from "@/lib/ai/request-script-segment";
 import {
   executeScriptPipeline,
+  pipelineResultFromSetup,
   type PipelineProgress,
   type PipelineResult,
 } from "@/lib/ai/script-pipeline";
 import {
+  buildScriptSetupFromSegment,
   deleteScriptPermanently,
   duplicateScript,
   formatActCount,
@@ -55,9 +58,10 @@ import {
   type ScriptRecord,
   type ScriptSetup,
 } from "@/lib/rehearsal-data";
+import { consolidateScriptLines } from "@/lib/consolidate-script-lines";
 import { dialogueFromSetup } from "@/lib/local-library";
 
-const PIPELINE_TIMEOUT_MS = 8000;
+const IMPORT_TIMEOUT_MS = 8000;
 
 function formatDialogueFromSetup(setup: ScriptSetup): string {
   const byScene = new Map<string, typeof setup.lines>();
@@ -93,9 +97,19 @@ function applyCharacterRenames(setup: ScriptSetup, names: string[]): ScriptSetup
 }
 
 function sourceLabel(result: PipelineResult): string {
+  if (result.stats.source === "gemini") return "Gemini";
   if (result.stats.source === "ollama") return "Ollama";
   if (result.stats.source === "fastapi") return "modelo local (FastAPI)";
   return "heurística del navegador";
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, code: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      window.setTimeout(() => reject(new Error(code)), ms);
+    }),
+  ]);
 }
 
 export const Route = createFileRoute("/libretos")({
@@ -360,9 +374,76 @@ function Libretos() {
       toast.error(error instanceof Error ? error.message : "No se pudo eliminar definitivamente"),
   });
 
-  function fallbackImport(draft: ScriptImportDraft, reason: string) {
+  function openReview(result: PipelineResult) {
+    setReviewResult(result);
+    setReviewTitle(result.setup.script?.title || "Libreto importado");
+    setReviewNames(result.setup.characters.map((character) => character.name));
+    setReviewDialogue(formatDialogueFromSetup(result.setup));
+    setPipelineBusy(false);
+    setPipelineProgress({
+      step: 5,
+      totalSteps: 5,
+      message: `Listo con ${sourceLabel(result)}. Revisa antes de guardar.`,
+      stage: "done",
+    });
+    window.setTimeout(() => {
+      setPipelineProgress(null);
+      setReviewOpen(true);
+    }, 400);
+  }
+
+  function fallbackLocalImport(draft: ScriptImportDraft, reason: string) {
     toast.message(reason);
+    // Sin Gemini: el diálogo ya se intentó segmentar arriba.
     importMutation.mutate(draft);
+  }
+
+  async function runLocalPipelineFallback(draft: ScriptImportDraft) {
+    if (!currentUserId) return;
+
+    setPipelineBusy(true);
+    setPipelineProgress({
+      step: 1,
+      totalSteps: 5,
+      message: "Gemini no disponible; usando detección local...",
+      stage: "sanitize",
+    });
+
+    try {
+      const result = await withTimeout(
+        executeScriptPipeline(draft, currentUserId, setPipelineProgress),
+        IMPORT_TIMEOUT_MS,
+        "PIPELINE_TIMEOUT",
+      );
+
+      if (!result.setup.characters.length && !result.setup.lines.length) {
+        setPipelineBusy(false);
+        setPipelineProgress(null);
+        fallbackLocalImport(
+          draft,
+          "No se detectaron personajes con el pipeline; se usa el analizador local.",
+        );
+        return;
+      }
+
+      openReview({
+        ...result,
+        setup: {
+          ...result.setup,
+          lines: consolidateScriptLines(result.setup.lines),
+        },
+      });
+    } catch (error) {
+      setPipelineBusy(false);
+      setPipelineProgress(null);
+      const timedOut = error instanceof Error && error.message === "PIPELINE_TIMEOUT";
+      fallbackLocalImport(
+        draft,
+        timedOut
+          ? "La detección local tardó demasiado; se importó con el analizador habitual."
+          : "No se pudo completar la detección automática; se usa el analizador local.",
+      );
+    }
   }
 
   async function runImportPipeline(draft: ScriptImportDraft) {
@@ -375,55 +456,34 @@ function Libretos() {
     setPipelineProgress({
       step: 1,
       totalSteps: 5,
-      message: "Preparando detección de personajes...",
+      message: "Segmentando con Gemini...",
       stage: "sanitize",
     });
     setReviewOpen(false);
     setReviewResult(null);
 
     try {
-      const result = await Promise.race([
-        executeScriptPipeline(draft, currentUserId, setPipelineProgress),
-        new Promise<never>((_, reject) => {
-          window.setTimeout(() => reject(new Error("PIPELINE_TIMEOUT")), PIPELINE_TIMEOUT_MS);
+      const segmented = await withTimeout(
+        requestScriptSegment({
+          rawText: draft.rawText,
+          title: draft.title,
         }),
-      ]);
+        IMPORT_TIMEOUT_MS,
+        "GEMINI_TIMEOUT",
+      );
 
-      if (!result.setup.characters.length && !result.setup.lines.length) {
-        setPipelineBusy(false);
-        setPipelineProgress(null);
-        fallbackImport(
-          draft,
-          "No se detectaron personajes con el pipeline; se usa el importador habitual.",
-        );
+      const hasLines = Boolean(segmented?.scenes?.some((scene) => scene.lines.length > 0));
+      if (segmented && hasLines) {
+        const setup = buildScriptSetupFromSegment(draft, currentUserId, segmented);
+        openReview(pipelineResultFromSetup(setup, "gemini"));
         return;
       }
 
-      setReviewResult(result);
-      setReviewTitle(result.setup.script?.title || draft.title);
-      setReviewNames(result.setup.characters.map((character) => character.name));
-      setReviewDialogue(formatDialogueFromSetup(result.setup));
-      setPipelineBusy(false);
-      setPipelineProgress({
-        step: 5,
-        totalSteps: 5,
-        message: `Listo con ${sourceLabel(result)}. Revisa antes de guardar.`,
-        stage: "done",
-      });
-      window.setTimeout(() => {
-        setPipelineProgress(null);
-        setReviewOpen(true);
-      }, 400);
-    } catch (error) {
-      setPipelineBusy(false);
-      setPipelineProgress(null);
-      const timedOut = error instanceof Error && error.message === "PIPELINE_TIMEOUT";
-      fallbackImport(
-        draft,
-        timedOut
-          ? "La detección tardó demasiado; se importó con el flujo habitual."
-          : "No se pudo completar la detección automática; se usa el importador habitual.",
-      );
+      toast.message("Gemini no devolvió escenas; se usa la detección local.");
+      await runLocalPipelineFallback(draft);
+    } catch {
+      toast.message("Gemini no disponible o tardó demasiado; se usa la detección local.");
+      await runLocalPipelineFallback(draft);
     }
   }
 
@@ -502,17 +562,22 @@ function Libretos() {
               updated_at: new Date().toISOString(),
             }
           : null,
+        lines: consolidateScriptLines(renamedSetup.lines),
       };
 
       const originalDialogue = formatDialogueFromSetup(renamedSetup);
       if (reviewDialogue.trim() !== originalDialogue.trim()) {
-        const script = await importScriptFromText({
-          title: reviewTitle.trim() || setup.script?.title || "Libreto importado",
-          author: setup.script?.author,
-          genre: setup.script?.genre ?? "Importado",
-          description: setup.script?.description,
-          rawText: reviewDialogue,
-        });
+        // Diálogo editado: reparseo local, sin volver a llamar a Gemini.
+        const script = await importScriptFromText(
+          {
+            title: reviewTitle.trim() || setup.script?.title || "Libreto importado",
+            author: setup.script?.author,
+            genre: setup.script?.genre ?? "Importado",
+            description: setup.script?.description,
+            rawText: reviewDialogue,
+          },
+          { useAiSegment: false },
+        );
         refreshScripts();
         setSelectedId(script.id);
         setActiveTab("Mis libretos");

@@ -24,6 +24,8 @@ import {
 
 export { saveLocalScriptSetup };
 import { requestScriptSegment } from "@/lib/ai/request-script-segment";
+import type { ScriptSegmentResult } from "@/lib/ai/types";
+import { consolidateScriptLines } from "@/lib/consolidate-script-lines";
 import { getDemoScriptSetup } from "@/lib/demo-script";
 import { withTimeout } from "@/lib/browser";
 import { cleanCharacterName, isCharacterCue, splitNamedCue } from "@/lib/script-text";
@@ -381,11 +383,121 @@ async function segmentImportedScript(
   }
 }
 
-export async function importScriptFromText(draft: ScriptImportDraft) {
+/**
+ * Convierte la respuesta de Gemini (requestScriptSegment) al ScriptSetup de revisión/ensayo.
+ * No persiste nada; el guardado ocurre al confirmar la revisión.
+ */
+export function buildScriptSetupFromSegment(
+  draft: ScriptImportDraft,
+  userId: string,
+  segmented: ScriptSegmentResult,
+): ScriptSetup {
+  const now = new Date().toISOString();
+  const scriptId = `local-script-${crypto.randomUUID()}`;
+  const sceneGroups = segmented.scenes.filter((scene) => scene.lines.length > 0);
+  const namesFromSegment = segmented.characters
+    .map((name) => cleanCharacterName(name))
+    .filter(Boolean);
+  const namesFromLines = Array.from(
+    new Set(
+      sceneGroups
+        .flatMap((scene) => scene.lines.map((line) => line.characterName))
+        .filter(Boolean)
+        .map((name) => cleanCharacterName(name!)),
+    ),
+  );
+  const names = namesFromSegment.length > 0 ? namesFromSegment : namesFromLines;
+
+  const characters: CharacterRecord[] = names.map((name, index) => ({
+    id: `local-char-${crypto.randomUUID()}`,
+    script_id: scriptId,
+    name,
+    role: null,
+    actor_type: index === 0 ? "user" : "ai",
+    voice: index === 0 ? "Tu voz" : "Sofia (Femenina)",
+    base_emotion: "Neutral",
+    sort_order: index + 1,
+    created_at: now,
+  }));
+  const byName = new Map(characters.map((character) => [character.name.toUpperCase(), character]));
+
+  const script: ScriptRecord = {
+    id: scriptId,
+    user_id: userId,
+    title: (segmented.title?.trim() || draft.title).trim() || "Libreto importado",
+    author: draft.author?.trim() || null,
+    genre: draft.genre?.trim() || "Importado",
+    act_count: Math.max(
+      1,
+      sceneGroups.filter((group) => /^(ACTO|Acto)\b/i.test(group.title)).length || 1,
+    ),
+    description:
+      draft.description?.trim() ||
+      `Segmentado con Gemini (${sceneGroups.length} escenas, ${characters.length} personajes).`,
+    is_favorite: false,
+    is_active: false,
+    is_public: false,
+    created_at: now,
+    updated_at: now,
+    raw_text: draft.rawText,
+    source_type: "imported",
+    imported_at: now,
+    deleted_at: null,
+  };
+
+  const scenes: SceneRecord[] = sceneGroups.map((group, index) => ({
+    id: `local-scene-${crypto.randomUUID()}`,
+    script_id: scriptId,
+    title: group.title || `Escena ${index + 1}`,
+    location: group.location?.trim() || null,
+    description: "Escena detectada con Gemini al importar el libreto.",
+    sort_order: index + 1,
+    created_at: now,
+  }));
+
+  const lines: ScriptLineWithCharacter[] = sceneGroups.flatMap((group, sceneIndex) => {
+    const scene = scenes[sceneIndex]!;
+    return group.lines.map((line, index) => {
+      const character = line.characterName
+        ? (byName.get(cleanCharacterName(line.characterName).toUpperCase()) ?? null)
+        : null;
+      return {
+        id: `local-line-${crypto.randomUUID()}`,
+        scene_id: scene.id,
+        character_id: character?.id ?? null,
+        line_order: index + 1,
+        text: line.text,
+        cue: null,
+        duration_seconds: estimateLineDuration(line.text),
+        created_at: now,
+        character,
+      };
+    });
+  });
+
+  return {
+    script,
+    scenes,
+    scene: scenes[0] ?? null,
+    characters,
+    lines: consolidateScriptLines(lines),
+  };
+}
+
+export type ImportScriptOptions = {
+  /** Si true, intenta Gemini/servidor. Por defecto false: solo analizador local. */
+  useAiSegment?: boolean;
+};
+
+export async function importScriptFromText(
+  draft: ScriptImportDraft,
+  options: ImportScriptOptions = {},
+) {
   const user = await getCurrentUser();
   if (!user) throw new Error("Inicia sesión para importar libretos.");
 
-  const segmentedGroups = await segmentImportedScript(draft);
+  const useAiSegment = options.useAiSegment === true;
+  const segmentedGroups = useAiSegment ? await segmentImportedScript(draft) : null;
   const parsedLines = segmentedGroups
     ? segmentedGroups.flatMap((group) => group.lines)
     : parseImportedScriptLines(draft.rawText);
@@ -746,7 +858,7 @@ async function getScriptBundle(scriptId: string) {
   };
 }
 
-function parseImportedScriptLines(rawText: string): ImportedScriptLine[] {
+export function parseImportedScriptLines(rawText: string): ImportedScriptLine[] {
   const normalizedLines = rawText
     .replace(/\r/g, "")
     .split("\n")
